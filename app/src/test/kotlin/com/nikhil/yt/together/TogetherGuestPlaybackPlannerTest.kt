@@ -40,7 +40,7 @@ class TogetherGuestPlaybackPlannerTest {
     }
 
     @Test
-    fun planPlayTrackNow_addsAndSkips_whenTrackMissingAndAddAllowed() {
+    fun planPlayTrackNow_addsAndSeeksToIt_whenTrackMissingAndAddAllowed() {
         val roomState =
             TogetherRoomState(
                 sessionId = "sid",
@@ -54,7 +54,8 @@ class TogetherGuestPlaybackPlannerTest {
         assertEquals(
             listOf(
                 TogetherGuestOp.AddTrack(TogetherTrack(id = "b", title = "B"), AddTrackMode.PLAY_NEXT),
-                TogetherGuestOp.Control(ControlAction.SkipNext),
+                // By id, not SkipNext: another guest's add could land in between.
+                TogetherGuestOp.Control(ControlAction.SeekToTrack(trackId = "b", positionMs = 0L)),
             ),
             ops,
         )

@@ -1,6 +1,6 @@
 /*
  * Velune - by Nikhil
- * Nikhil
+ * Spectra - Listen Together rebuild
  * Licensed Under GPL-3.0
  */
 
@@ -13,69 +13,50 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
-import io.ktor.websocket.CloseReason
-import io.ktor.websocket.Frame
-import io.ktor.websocket.WebSocketSession
-import io.ktor.websocket.close
-import io.ktor.websocket.readText
-import io.ktor.websocket.send
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 sealed interface TogetherServerEvent {
-    data class JoinRequested(
-        val participant: TogetherParticipant,
-    ) : TogetherServerEvent
-
-    data class ParticipantJoined(
-        val participant: TogetherParticipant,
-    ) : TogetherServerEvent
-
-    data class ParticipantLeft(
-        val participantId: String,
-        val reason: String?,
-    ) : TogetherServerEvent
-
-    data class ControlRequested(
-        val request: ControlRequest,
-    ) : TogetherServerEvent
-
-    data class AddTrackRequested(
-        val request: AddTrackRequest,
-    ) : TogetherServerEvent
-
-    data class Error(
-        val message: String,
-        val throwable: Throwable? = null,
-    ) : TogetherServerEvent
+    data class JoinRequested(val participant: TogetherParticipant) : TogetherServerEvent
+    data class ParticipantJoined(val participant: TogetherParticipant) : TogetherServerEvent
+    data class ParticipantLeft(val participantId: String, val reason: String?) : TogetherServerEvent
+    data class ControlRequested(val request: ControlRequest) : TogetherServerEvent
+    data class AddTrackRequested(val request: AddTrackRequest) : TogetherServerEvent
 }
 
+/**
+ * The room, run on the host's phone. Guests reach it over any [TogetherConnection]: the LAN WebSocket
+ * started by [startLan], or the online relay (handed to [accept]). The protocol is the same on both.
+ */
 class TogetherServer(
     private val scope: CoroutineScope,
     val sessionId: String,
     private val sessionKey: String,
+    private val hostClientId: String,
     private val hostDisplayName: String,
     initialSettings: TogetherRoomSettings,
 ) {
     private val mutex = Mutex()
     private var settings: TogetherRoomSettings = initialSettings
     private var engine: EmbeddedServer<*, *>? = null
+    private val bannedClientIds = ConcurrentHashMap.newKeySet<String>()
+
     @Volatile
     private var lastParticipants: List<TogetherParticipant> = emptyList()
 
-    private data class Client(
+    private class Guest(
         val participantId: String,
         val clientId: String,
         val name: String,
-        val session: WebSocketSession,
-        var pending: Boolean,
+        val connection: TogetherConnection,
+        @Volatile var pending: Boolean,
     )
 
-    private val clients = ConcurrentHashMap<String, Client>()
+    private val guests = ConcurrentHashMap<String, Guest>()
 
     var onEvent: ((TogetherServerEvent) -> Unit)? = null
 
@@ -83,275 +64,164 @@ class TogetherServer(
 
     suspend fun currentSettings(): TogetherRoomSettings = mutex.withLock { settings }
 
-    suspend fun start(port: Int) {
-        mutex.withLock {
-            if (engine != null) return
-            engine =
-                embeddedServer(CIO, port = port, host = "0.0.0.0") {
-                    install(WebSockets)
-                    routing {
-                        webSocket("/together") {
-                            handleClient()
-                        }
-                    }
-                }.also { it.start(wait = false) }
-        }
+    /** Starts the LAN endpoint on a free port and returns it, or null if the network refused. */
+    suspend fun startLan(): Int? = mutex.withLock {
+        engine?.let { return@withLock it.engine.resolvedConnectors().firstOrNull()?.port }
+        runCatching {
+            val server = embeddedServer(CIO, port = 0, host = "0.0.0.0") {
+                install(WebSockets)
+                routing {
+                    webSocket("/together") { accept(WebSocketConnection(this, this)) }
+                }
+            }.also { it.start(wait = false) }
+            engine = server
+            server.engine.resolvedConnectors().firstOrNull()?.port
+        }.getOrNull()
     }
 
     suspend fun stop() {
-        val eng =
-            mutex.withLock {
-                val e = engine ?: return
-                engine = null
-                e
-            }
-
-        clients.values.forEach { client ->
-            runCatching { client.session.close(CloseReason(CloseReason.Codes.NORMAL, "Session ended")) }
-        }
-        clients.clear()
-
-        runCatching { eng.stop(1000, 2000) }
+        val eng = mutex.withLock { engine.also { engine = null } }
+        guests.values.forEach { runCatching { it.connection.close("Session ended") } }
+        guests.clear()
+        eng?.let { runCatching { it.stop(500, 1500) } }
     }
 
     suspend fun updateSettings(newSettings: TogetherRoomSettings) {
-        mutex.withLock {
-            settings = newSettings
-        }
+        mutex.withLock { settings = newSettings }
     }
 
     suspend fun approveParticipant(participantId: String, approved: Boolean) {
-        val client = clients[participantId] ?: return
-        if (!client.pending) return
-
+        val guest = guests[participantId] ?: return
+        if (!guest.pending) return
+        guest.connection.send(encode(JoinDecision(sessionId = sessionId, participantId = participantId, approved = approved)))
         if (!approved) {
-            runCatching {
-                client.session.send(
-                    TogetherJson.json.encodeToString(
-                        TogetherMessage.serializer(),
-                        JoinDecision(sessionId = sessionId, participantId = participantId, approved = false),
-                    ),
-                )
-            }
-            runCatching { client.session.close(CloseReason(CloseReason.Codes.NORMAL, "Not approved")) }
-            clients.remove(participantId)
-            onEvent?.invoke(TogetherServerEvent.ParticipantLeft(participantId, "Not approved"))
+            remove(guest, "Not approved")
             return
         }
+        guest.pending = false
+        onEvent?.invoke(TogetherServerEvent.ParticipantJoined(guest.toParticipant()))
+    }
 
-        client.pending = false
-        runCatching {
-            client.session.send(
-                TogetherJson.json.encodeToString(
-                    TogetherMessage.serializer(),
-                    JoinDecision(sessionId = sessionId, participantId = participantId, approved = true),
-                ),
-            )
-        }
-        onEvent?.invoke(
-            TogetherServerEvent.ParticipantJoined(
-                TogetherParticipant(
-                    id = participantId,
-                    name = client.name,
-                    isHost = false,
-                    isPending = false,
-                    isConnected = true,
-                ),
-            ),
-        )
+    suspend fun kickParticipant(participantId: String, reason: String?) {
+        val guest = guests[participantId] ?: return
+        guest.connection.send(encode(KickParticipant(sessionId = sessionId, participantId = participantId, reason = reason)))
+        remove(guest, reason ?: "Removed")
+    }
+
+    suspend fun banParticipant(participantId: String, reason: String?) {
+        val guest = guests[participantId] ?: return
+        bannedClientIds += guest.clientId
+        guest.connection.send(encode(BanParticipant(sessionId = sessionId, participantId = participantId, reason = reason)))
+        remove(guest, reason ?: "Banned")
     }
 
     suspend fun broadcastRoomState(state: TogetherRoomState) {
         val snapshotSettings = mutex.withLock { settings }
-        val host =
-            TogetherParticipant(
-                id = state.hostId,
-                name = hostDisplayName,
-                isHost = true,
-                isPending = false,
-                isConnected = true,
-            )
-
-        val participantList =
-            buildList {
-                add(host)
-                addAll(
-                    clients.values
-                        .sortedBy { it.name.lowercase() }
-                        .map {
-                            TogetherParticipant(
-                                id = it.participantId,
-                                name = it.name,
-                                isHost = false,
-                                isPending = it.pending,
-                                isConnected = true,
-                            )
-                        },
-                )
-            }
-        lastParticipants = participantList
-
-        val baseState =
-            state.copy(
-                participants = participantList,
-                settings = snapshotSettings,
-            )
-
-        clients.values.forEach { client ->
-            val safeState =
-                if (client.pending) {
-                    baseState.copy(
-                        queue = emptyList(),
-                        queueHash = "",
-                        currentIndex = 0,
-                        isPlaying = false,
-                        positionMs = 0L,
-                    )
-                } else {
-                    baseState
-                }
-
-            runCatching {
-                client.session.send(
-                    TogetherJson.json.encodeToString(
-                        TogetherMessage.serializer(),
-                        RoomStateMessage(safeState),
-                    ),
-                )
-            }
+        val participantList = buildList {
+            add(TogetherParticipant(id = state.hostId, name = hostDisplayName, isHost = true, clientId = hostClientId))
+            addAll(guests.values.sortedBy { it.name.lowercase() }.map { it.toParticipant() })
         }
+        lastParticipants = participantList
+        val full = state.copy(participants = participantList, settings = snapshotSettings)
+        // Someone waiting for approval sees who is here, but not what is playing.
+        val waiting = full.copy(queue = emptyList(), queueHash = "", currentIndex = 0, isPlaying = false, positionMs = 0L)
+        val fullText = encode(RoomStateMessage(full))
+        val waitingText = encode(RoomStateMessage(waiting))
+        guests.values.forEach { it.connection.send(if (it.pending) waitingText else fullText) }
     }
 
-    private suspend fun WebSocketSession.handleClient() {
-        val helloText =
-            try {
-                incoming.receive() as? Frame.Text
-            } catch (_: ClosedReceiveChannelException) {
-                null
-            }
-
-        val hello =
-            runCatching {
-                val txt = helloText?.readText().orEmpty()
-                val decoded = TogetherJson.json.decodeFromString(TogetherMessage.serializer(), txt)
-                decoded as? ClientHello
-            }.getOrNull()
-
-        if (hello == null) {
-            close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Handshake required"))
+    /** Runs one guest from hello to goodbye. Returns when the link ends. */
+    suspend fun accept(connection: TogetherConnection) {
+        val hello = withTimeoutOrNull(10_000) { connection.incoming.receiveCatching().getOrNull() }
+            ?.let { runCatching { TogetherJson.json.decodeFromString(TogetherMessage.serializer(), it) }.getOrNull() }
+            as? ClientHello
+        val refusal = when {
+            hello == null -> "Handshake required"
+            hello.protocolVersion != TogetherProtocolVersion -> "Update Spectra to join this session"
+            hello.sessionId != sessionId || hello.sessionKey != sessionKey -> "Invalid session"
+            hello.clientId in bannedClientIds -> "You can't join this session"
+            else -> null
+        }
+        if (refusal != null) {
+            connection.send(encode(ServerError(sessionId = hello?.sessionId, message = refusal)))
+            connection.close(refusal)
             return
         }
+        hello!!
 
-        if (hello.protocolVersion != TogetherProtocolVersion) {
-            send(
-                TogetherJson.json.encodeToString(
-                    TogetherMessage.serializer(),
-                    ServerError(sessionId = hello.sessionId, message = "Unsupported protocol version"),
+        // A rejoin from the same install replaces its old, probably dead, link.
+        guests.values.filter { it.clientId == hello.clientId }.forEach { remove(it, "Reconnected") }
+
+        val currentSettings = mutex.withLock { settings }
+        val guest = Guest(
+            participantId = UUID.randomUUID().toString(),
+            clientId = hello.clientId,
+            name = hello.displayName.trim().ifBlank { "Guest" }.take(40),
+            connection = connection,
+            pending = currentSettings.requireHostApprovalToJoin,
+        )
+        guests[guest.participantId] = guest
+        connection.send(
+            encode(
+                ServerWelcome(
+                    protocolVersion = TogetherProtocolVersion,
+                    sessionId = sessionId,
+                    participantId = guest.participantId,
+                    role = ServerRole.GUEST,
+                    isPending = guest.pending,
+                    settings = currentSettings,
+                    hostClientId = hostClientId,
+                    hostName = hostDisplayName,
                 ),
-            )
-            close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Unsupported protocol"))
-            return
-        }
-
-        if (hello.sessionId != sessionId || hello.sessionKey != sessionKey) {
-            send(
-                TogetherJson.json.encodeToString(
-                    TogetherMessage.serializer(),
-                    ServerError(sessionId = hello.sessionId, message = "Invalid session"),
-                ),
-            )
-            close(CloseReason(CloseReason.Codes.CANNOT_ACCEPT, "Invalid session"))
-            return
-        }
-
-        val participantId = UUID.randomUUID().toString()
-        val isPending = mutex.withLock { settings.requireHostApprovalToJoin }
-
-        val client =
-            Client(
-                participantId = participantId,
-                clientId = hello.clientId,
-                name = hello.displayName.trim().ifBlank { "Guest" },
-                session = this,
-                pending = isPending,
-            )
-
-        clients[participantId] = client
-
-        val welcome =
-            ServerWelcome(
-                protocolVersion = TogetherProtocolVersion,
-                sessionId = sessionId,
-                participantId = participantId,
-                role = ServerRole.GUEST,
-                isPending = isPending,
-                settings = mutex.withLock { settings },
-            )
-
-        send(TogetherJson.json.encodeToString(TogetherMessage.serializer(), welcome))
-
-        val participant =
-            TogetherParticipant(
-                id = participantId,
-                name = client.name,
-                isHost = false,
-                isPending = isPending,
-                isConnected = true,
-            )
-
+            ),
+        )
         onEvent?.invoke(
-            if (isPending) TogetherServerEvent.JoinRequested(participant) else TogetherServerEvent.ParticipantJoined(participant),
+            if (guest.pending) TogetherServerEvent.JoinRequested(guest.toParticipant())
+            else TogetherServerEvent.ParticipantJoined(guest.toParticipant()),
         )
 
         try {
-            for (frame in incoming) {
-                val text = (frame as? Frame.Text)?.readText() ?: continue
-                val message =
-                    runCatching { TogetherJson.json.decodeFromString(TogetherMessage.serializer(), text) }
-                        .getOrElse {
-                            onEvent?.invoke(TogetherServerEvent.Error("Failed to decode message", it))
-                            continue
-                        }
-
+            for (text in connection.incoming) {
+                val message = runCatching { TogetherJson.json.decodeFromString(TogetherMessage.serializer(), text) }.getOrNull() ?: continue
                 when (message) {
-                    is HeartbeatPing -> {
-                        send(
-                            TogetherJson.json.encodeToString(
-                                TogetherMessage.serializer(),
-                                HeartbeatPong(
-                                    sessionId = sessionId,
-                                    pingId = message.pingId,
-                                    clientElapsedRealtimeMs = message.clientElapsedRealtimeMs,
-                                    serverElapsedRealtimeMs = android.os.SystemClock.elapsedRealtime(),
-                                ),
+                    is HeartbeatPing -> connection.send(
+                        encode(
+                            HeartbeatPong(
+                                sessionId = sessionId,
+                                pingId = message.pingId,
+                                clientElapsedRealtimeMs = message.clientElapsedRealtimeMs,
+                                serverElapsedRealtimeMs = android.os.SystemClock.elapsedRealtime(),
                             ),
-                        )
-                    }
-
-                    is ControlRequest -> {
-                        if (!client.pending) onEvent?.invoke(TogetherServerEvent.ControlRequested(message))
-                    }
-
-                    is AddTrackRequest -> {
-                        if (!client.pending) onEvent?.invoke(TogetherServerEvent.AddTrackRequested(message))
-                    }
-
-                    is ClientLeave -> {
-                        if (message.participantId == participantId) {
-                            close(CloseReason(CloseReason.Codes.NORMAL, "Left"))
-                            break
-                        }
-                    }
-
+                        ),
+                    )
+                    is ControlRequest -> if (!guest.pending) onEvent?.invoke(TogetherServerEvent.ControlRequested(message.copy(participantId = guest.participantId)))
+                    is AddTrackRequest -> if (!guest.pending) onEvent?.invoke(TogetherServerEvent.AddTrackRequested(message.copy(participantId = guest.participantId)))
+                    is ClientLeave -> break
                     else -> Unit
                 }
             }
-        } catch (t: Throwable) {
-            onEvent?.invoke(TogetherServerEvent.Error("Client loop failed", t))
         } finally {
-            clients.remove(participantId)
-            onEvent?.invoke(TogetherServerEvent.ParticipantLeft(participantId, "Disconnected"))
-            runCatching { close() }
+            if (guests.remove(guest.participantId) != null) {
+                onEvent?.invoke(TogetherServerEvent.ParticipantLeft(guest.participantId, "Left"))
+            }
+            runCatching { connection.close("Left") }
         }
     }
+
+    private suspend fun remove(guest: Guest, reason: String) {
+        if (guests.remove(guest.participantId) == null) return
+        runCatching { guest.connection.close(reason) }
+        onEvent?.invoke(TogetherServerEvent.ParticipantLeft(guest.participantId, reason))
+    }
+
+    private fun Guest.toParticipant() = TogetherParticipant(
+        id = participantId,
+        name = name,
+        isHost = false,
+        isPending = pending,
+        clientId = clientId,
+    )
+
+    private fun encode(message: TogetherMessage): String =
+        TogetherJson.json.encodeToString(TogetherMessage.serializer(), message)
 }

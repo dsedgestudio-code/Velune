@@ -36,6 +36,8 @@ data class ServerWelcome(
     val role: ServerRole,
     val isPending: Boolean,
     val settings: TogetherRoomSettings,
+    val hostClientId: String? = null,
+    val hostName: String? = null,
 ) : TogetherMessage
 
 @Serializable

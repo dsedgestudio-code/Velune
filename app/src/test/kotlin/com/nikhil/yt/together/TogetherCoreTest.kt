@@ -7,34 +7,53 @@
 package com.nikhil.yt.together
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TogetherCoreTest {
     @Test
-    fun deepLink_roundTrip() {
-        val join =
-            TogetherJoinInfo(
-                host = "192.168.1.20",
-                port = 42117,
-                sessionId = "sid123",
-                sessionKey = "key456",
-            )
-        val encoded = TogetherLink.encode(join)
-        val decoded = TogetherLink.decode(encoded)
-        assertEquals(join, decoded)
+    fun code_isGeneratedValid_andSurvivesHowPeopleTypeIt() {
+        val code = TogetherCode.generate()
+        assertEquals(TogetherCode.LENGTH, code.length)
+        assertEquals(code, TogetherCode.normalize(code))
+        assertEquals(code, TogetherCode.normalize(TogetherCode.display(code).lowercase()))
+        assertEquals("0123ABCD", TogetherCode.normalize("oi23-abcd")) // O->0, I->1
+        assertNull(TogetherCode.normalize("ABC"))
+        assertNull(TogetherCode.normalize("ABCDEFGU")) // U is not in the alphabet
     }
 
     @Test
-    fun wsUrl_decode() {
-        val decoded =
-            TogetherLink.decode("ws://10.0.0.5:42117/together?sid=sid123&key=key456")
-        assertNotNull(decoded)
-        assertEquals("10.0.0.5", decoded!!.host)
-        assertEquals(42117, decoded.port)
-        assertEquals("sid123", decoded.sessionId)
-        assertEquals("key456", decoded.sessionKey)
+    fun code_parsesLinksAndPlainText() {
+        assertEquals("ABCD2345", TogetherCode.parse(TogetherCode.link("ABCD2345")))
+        assertEquals("ABCD2345", TogetherCode.parse("velune://together?code=abcd-2345"))
+        assertEquals("ABCD2345", TogetherCode.parse("  abcd 2345 "))
+        assertNull(TogetherCode.parse("https://example.com/together?code=ABCD2345"))
+    }
+
+    @Test
+    fun secret_isDeterministic_andSealsOnlyForTheSameCode() {
+        val a = TogetherSecret.fromCode("ABCD2345")
+        val b = TogetherSecret.fromCode("ABCD2345")
+        val other = TogetherSecret.fromCode("ABCD2346")
+        assertEquals(a.roomId, b.roomId)
+        assertEquals(a.lanKey, b.lanKey)
+        assertNotEquals(a.roomId, other.roomId)
+
+        val sealed = a.seal("hello".toByteArray())
+        assertEquals("hello", String(b.open(sealed)!!))
+        assertNull(other.open(sealed))
+        assertNull(a.open(sealed.copyOf().also { it[it.lastIndex] = (it.last() + 1).toByte() }))
+    }
+
+    @Test
+    fun mqttPacket_encodesRemainingLengthAsVarint() {
+        assertEquals(listOf(0x30, 0x00), MqttRelay.packet(0x30, ByteArray(0)).map { it.toInt() and 0xFF })
+        val big = MqttRelay.packet(0x30, ByteArray(321))
+        assertEquals(0xC1, big[1].toInt() and 0xFF) // 321 = 0x41 | continuation
+        assertEquals(0x02, big[2].toInt() and 0xFF)
+        assertEquals(3 + 321, big.size)
     }
 
     @Test
