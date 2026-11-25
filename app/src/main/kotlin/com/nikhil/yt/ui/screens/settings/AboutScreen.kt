@@ -174,7 +174,7 @@ fun AboutScreen(
                     iconRes = R.drawable.github,
                     title = "GitHub Repository",
                     subtitle = "View source code",
-                    onClick = { uriHandler.openUri("https://github.com/dsedgestudio-code/velune") }
+                    onClick = { uriHandler.openUri("https://github.com/dsedgestudio-code/spectra") }
                 )
                 Spacer(Modifier.height(24.dp))
 

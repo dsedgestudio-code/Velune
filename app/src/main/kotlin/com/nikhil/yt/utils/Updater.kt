@@ -88,7 +88,7 @@ object Updater {
         cachedEtag: String?,
     ): ReleasesNetworkResult {
         val response: HttpResponse =
-            client.get("https://api.github.com/repos/dsedgestudio-code/velune/releases?per_page=$perPage") {
+            client.get("https://api.github.com/repos/dsedgestudio-code/spectra/releases?per_page=$perPage") {
                 headers {
                     append("Accept", "application/vnd.github+json")
                     append("User-Agent", "Spectra")
@@ -143,7 +143,7 @@ object Updater {
     suspend fun getCommitHistory(count: Int = 20, branch: String = "dev"): Result<List<GitCommit>> =
         runCatching {
             val response =
-                client.get("https://api.github.com/repos/dsedgestudio-code/velune/commits?sha=$branch&per_page=$count")
+                client.get("https://api.github.com/repos/dsedgestudio-code/spectra/commits?sha=$branch&per_page=$count")
                     .bodyAsText()
             val jsonArray = JSONArray(response)
             val commits = mutableListOf<GitCommit>()
@@ -165,7 +165,7 @@ object Updater {
         }
 
     fun getLatestDownloadUrl(): String {
-        val baseUrl = "https://github.com/dsedgestudio-code/velune/releases/latest/download/"
+        val baseUrl = "https://github.com/dsedgestudio-code/spectra/releases/latest/download/"
         val architecture = BuildConfig.ARCHITECTURE
         return if (architecture == "universal") {
             baseUrl + "Spectra.apk"

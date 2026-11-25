@@ -101,7 +101,7 @@ fun UpdateScreen(
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val coroutineScope = rememberCoroutineScope()
-    val nightlyInstallUrl = "https://github.com/dsedgestudio-code/velune/releases/latest"
+    val nightlyInstallUrl = "https://github.com/dsedgestudio-code/spectra/releases/latest"
 
     val (enableUpdateNotification, onEnableUpdateNotificationChange) = rememberPreference(
         EnableUpdateNotificationKey,
