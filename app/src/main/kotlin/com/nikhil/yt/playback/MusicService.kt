@@ -27,19 +27,12 @@ import android.database.SQLException
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaCodecList
-import android.media.audiofx.AudioEffect
-import android.media.audiofx.BassBoost
-import android.media.audiofx.Equalizer
-import android.media.audiofx.LoudnessEnhancer
-import android.media.audiofx.Virtualizer
 import android.net.ConnectivityManager
 import android.os.Binder
 import android.os.Build
-import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.content.getSystemService
 import androidx.core.net.toUri
-import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -87,6 +80,7 @@ import com.nikhil.yt.MainActivity
 import com.nikhil.yt.R
 import com.nikhil.yt.constants.AudioCrossfadeDurationKey
 import com.nikhil.yt.constants.AudioNormalizationKey
+import com.nikhil.yt.constants.ImmersiveAudioKey
 import com.nikhil.yt.constants.AudioOffload
 import com.nikhil.yt.constants.AudioQualityKey
 import com.nikhil.yt.constants.AutoDownloadOnLikeKey
@@ -96,15 +90,6 @@ import com.nikhil.yt.constants.AutoStartOnBluetoothKey
 import com.nikhil.yt.constants.DiscordTokenKey
 import com.nikhil.yt.constants.EnableDiscordRPCKey
 import com.nikhil.yt.constants.EnableLastFMScrobblingKey
-import com.nikhil.yt.constants.EqualizerBandLevelsMbKey
-import com.nikhil.yt.constants.EqualizerBassBoostEnabledKey
-import com.nikhil.yt.constants.EqualizerBassBoostStrengthKey
-import com.nikhil.yt.constants.EqualizerEnabledKey
-import com.nikhil.yt.constants.EqualizerOutputGainEnabledKey
-import com.nikhil.yt.constants.EqualizerOutputGainMbKey
-import com.nikhil.yt.constants.EqualizerSelectedProfileIdKey
-import com.nikhil.yt.constants.EqualizerVirtualizerEnabledKey
-import com.nikhil.yt.constants.EqualizerVirtualizerStrengthKey
 import com.nikhil.yt.constants.HideExplicitKey
 import com.nikhil.yt.constants.HideVideoKey
 import com.nikhil.yt.constants.HistoryDuration
@@ -132,7 +117,6 @@ import com.nikhil.yt.constants.ShowLyricsKey
 import com.nikhil.yt.constants.SkipSilenceKey
 import com.nikhil.yt.constants.SmartTrimmerKey
 import com.nikhil.yt.constants.StopMusicOnTaskClearKey
-import com.nikhil.yt.constants.TogetherClientIdKey
 import com.nikhil.yt.constants.YtmSyncKey
 import com.nikhil.yt.db.MusicDatabase
 import com.nikhil.yt.db.entities.AlbumEntity
@@ -153,7 +137,6 @@ import com.nikhil.yt.extensions.directorySizeBytes
 import com.nikhil.yt.extensions.findNextMediaItemById
 import com.nikhil.yt.extensions.mediaItems
 import com.nikhil.yt.extensions.metadata
-import com.nikhil.yt.extensions.setOffloadEnabled
 import com.nikhil.yt.extensions.toMediaItem
 import com.nikhil.yt.extensions.toPersistQueue
 import com.nikhil.yt.extensions.toQueue
@@ -222,7 +205,6 @@ import java.time.LocalDateTime
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import kotlin.math.min
-import kotlin.math.pow
 import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
@@ -236,6 +218,12 @@ class MusicService :
 
     @Inject
     lateinit var lyricsHelper: LyricsHelper
+
+    @Inject
+    lateinit var forYouEngine: com.nikhil.yt.utils.ForYouSuggestionEngine
+
+    @Inject
+    lateinit var taste: TasteStore
 
     @Inject
     lateinit var syncUtils: SyncUtils
@@ -335,10 +323,43 @@ class MusicService :
             database.format(mediaMetadata?.id)
         }.flowOn(Dispatchers.IO)
 
-    private val normalizeFactor = MutableStateFlow(1f)
+    private val normalizeGainDb = MutableStateFlow(0f)
+    private val boostGainDb = MutableStateFlow(0f)
+    private val loudnessProcessor = LoudnessProcessor()
+    private val overlapLoudnessProcessor = LoudnessProcessor() // crossfade player's own chain
+    private var outputRouteWatcher: OutputRouteWatcher? = null
+    private val immersiveProcessor = ImmersiveProcessor()
+    private val overlapImmersiveProcessor = ImmersiveProcessor()
     var playerVolume = MutableStateFlow(1f)
     private val audioFocusVolumeFactor = MutableStateFlow(1f)
     private val playbackFadeFactor = MutableStateFlow(1f)
+    private val resumeFadeFactor = MutableStateFlow(1f)
+    private val skipMemory by lazy { RecentMemory(this, "adaptive_shuffle_skips", AdaptiveShuffle.SKIP_COOLDOWN_MS) }
+    /** Songs that have actually been the current song since this shuffle started. */
+    private val playedThisShuffle = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val heardMemory by lazy { RecentMemory(this, "adaptive_shuffle_heard", AdaptiveShuffle.HEARD_COOLDOWN_MS) }
+    private var adaptiveShuffleJob: Job? = null
+    private var repeatTimerJob: Job? = null
+    private var focusRampJob: Job? = null
+    private var resumeFadeJob: Job? = null
+
+    /** Eased volume ramp; abrupt volume jumps (ducking, resume) are what make playback feel cheap. */
+    private fun rampVolume(flow: MutableStateFlow<Float>, target: Float, durationMs: Long): Job =
+        scope.launch {
+            val start = flow.value
+            val steps = (durationMs / 16L).coerceAtLeast(1L)
+            for (i in 1..steps) {
+                val t = i.toFloat() / steps
+                flow.value = start + (target - start) * (1f - (1f - t) * (1f - t)) // ease-out
+                delay(16L)
+            }
+            flow.value = target
+        }
+
+    private fun rampFocusVolume(target: Float) {
+        focusRampJob?.cancel()
+        focusRampJob = rampVolume(audioFocusVolumeFactor, target, if (target < audioFocusVolumeFactor.value) 300L else 600L)
+    }
     private val crossfadeDurationMs = MutableStateFlow(0)
     private val audioNormalizationEnabled = MutableStateFlow(true)
     private var crossfadeAudio: CrossfadeAudio? = null
@@ -357,28 +378,12 @@ class MusicService :
     lateinit var player: ExoPlayer
     private lateinit var mediaSession: MediaLibrarySession
 
-    private var isAudioEffectSessionOpened = false
-    private var openedAudioSessionId: Int? = null
-    val eqCapabilities = MutableStateFlow<EqCapabilities?>(null)
-    private val desiredEqSettings =
-        MutableStateFlow(
-            EqSettings(
-                enabled = false,
-                bandLevelsMb = emptyList(),
-                outputGainEnabled = false,
-                outputGainMb = 0,
-                bassBoostEnabled = false,
-                bassBoostStrength = 0,
-                virtualizerEnabled = false,
-                virtualizerStrength = 0,
-            ),
-        )
-
-    private var audioEffectsSessionId: Int? = null
-    private var equalizer: Equalizer? = null
-    private var bassBoost: BassBoost? = null
-    private var virtualizer: Virtualizer? = null
-    private var loudnessEnhancer: LoudnessEnhancer? = null
+    val audioEffects by lazy {
+        AudioEffectsController(this, dataStore, boostGainDb) { headroom ->
+            loudnessProcessor.headroomDb = headroom
+            overlapLoudnessProcessor.headroomDb = headroom
+        }
+    }
 
     private var discordRpc: DiscordRPC? = null
     private var lastDiscordUpdateTime = 0L
@@ -395,71 +400,33 @@ class MusicService :
 
     private var consecutivePlaybackErr = 0
 
-    val maxSafeGainFactor = 1.414f // +3 dB
     @Volatile
     private var hasCalledStartForeground = false
 
-    val togetherSessionState = MutableStateFlow<com.nikhil.yt.together.TogetherSessionState>(
-        com.nikhil.yt.together.TogetherSessionState.Idle,
-    )
-    private var togetherServer: com.nikhil.yt.together.TogetherServer? = null
-    private var togetherOnlineHost: com.nikhil.yt.together.TogetherOnlineHost? = null
-    private var togetherClient: com.nikhil.yt.together.TogetherClient? = null
-    private var togetherBroadcastJob: Job? = null
-    private var togetherOnlineConnectJob: Job? = null
-    private var togetherClientEventsJob: Job? = null
-    private var togetherHeartbeatJob: Job? = null
-    private var togetherClock: com.nikhil.yt.together.TogetherClock? = null
-    private var togetherSelfParticipantId: String? = null
-    private var togetherLastAppliedQueueHash: String? = null
-    private var togetherIsOnlineSession: Boolean = false
-    @Volatile
-    private var togetherApplyingRemote: Boolean = false
-    @Volatile
-    private var togetherSuppressEchoUntilElapsedMs: Long = 0L
-    @Volatile
-    private var togetherLastAppliedRoomStateSentAtElapsedMs: Long = 0L
-    @Volatile
-    private var togetherLastRemoteAppliedPlayWhenReady: Boolean? = null
-    @Volatile
-    private var togetherLastRemoteAppliedIndex: Int = -1
-    @Volatile
-    private var togetherLastSentControlAtElapsedMs: Long = 0L
-    @Volatile
-    private var togetherLastSentControlAction: com.nikhil.yt.together.ControlAction? = null
-    @Volatile
-    private var togetherPendingGuestControl: TogetherPendingGuestControl? = null
-
-    private fun isTogetherApplyingRemote(): Boolean = togetherApplyingRemote
-    private val togetherHostId: String = "host"
-    private var lastTogetherNoticeAtElapsedMs: Long = 0L
-    private var lastTogetherNoticeKey: String? = null
-
-    private data class TogetherPendingGuestControl(
-        val desiredIsPlaying: Boolean? = null,
-        val desiredIndex: Int? = null,
-        val desiredTrackId: String? = null,
-        val requestedAtElapsedMs: Long,
-        val expiresAtElapsedMs: Long,
-    )
-
-    private fun showTogetherNotice(message: String, key: String? = null) {
-        val now = android.os.SystemClock.elapsedRealtime()
-        val normalizedKey = key ?: message
-        if (normalizedKey == lastTogetherNoticeKey && now - lastTogetherNoticeAtElapsedMs < 1200L) return
-        lastTogetherNoticeKey = normalizedKey
-        lastTogetherNoticeAtElapsedMs = now
-        scope.launch(SilentHandler) {
-            Toast.makeText(this@MusicService, message, Toast.LENGTH_SHORT).show()
-        }
+    /** Listen Together: the session lives in the controller; the service lends it the player. */
+    val together: com.nikhil.yt.together.TogetherController by lazy {
+        com.nikhil.yt.together.TogetherController(
+            context = this,
+            dataStore = dataStore,
+            player = { player },
+            playNext = ::playNext,
+            addToQueue = ::addToQueue,
+            replaceQueue = ::replaceQueueForTogether,
+        )
     }
+    val togetherSessionState get() = together.state
 
-    private suspend fun getOrCreateTogetherClientId(): String {
-        val existing = dataStore.getAsync(TogetherClientIdKey)?.trim().orEmpty()
-        if (existing.isNotBlank()) return existing
-        val generated = java.util.UUID.randomUUID().toString()
-        dataStore.edit { prefs -> prefs[TogetherClientIdKey] = generated }
-        return generated
+    private fun replaceQueueForTogether(items: List<MediaItem>, startIndex: Int, positionMs: Long) {
+        suppressAutoPlayback = false
+        currentQueue = com.nikhil.yt.playback.queues.ListQueue(
+            title = getString(R.string.music_player),
+            items = items,
+            startIndex = startIndex,
+            position = positionMs,
+        )
+        queueTitle = null
+        player.setMediaItems(items, startIndex, positionMs)
+        player.prepare()
     }
 
     private fun ensureStartedAsForeground() {
@@ -477,7 +444,7 @@ class MusicService :
                     )
 
                 NotificationCompat.Builder(this, CHANNEL_ID)
-                    .setSmallIcon(R.drawable.ic_velune_concept)
+                    .setSmallIcon(R.drawable.ic_spectra_ghost)
                     .setContentTitle(getString(R.string.music_player))
                     .setContentText(getString(R.string.app_name))
                     .setContentIntent(contentIntent)
@@ -510,6 +477,11 @@ class MusicService :
     override fun onCreate() {
         super.onCreate()
         ensureScopesActive()
+        together.start()
+        outputRouteWatcher = OutputRouteWatcher(this) { profile ->
+            loudnessProcessor.outputProfile = profile
+            overlapLoudnessProcessor.outputProfile = profile
+        }.also { it.start() }
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -533,7 +505,7 @@ class MusicService :
             ExoPlayer
                 .Builder(this)
                 .setMediaSourceFactory(createMediaSourceFactory())
-                .setRenderersFactory(createRenderersFactory())
+                .setRenderersFactory(createRenderersFactory(immersiveProcessor, loudnessProcessor))
                 .setHandleAudioBecomingNoisy(true)
                 .setWakeMode(C.WAKE_MODE_NETWORK)
                 .setAudioAttributes(
@@ -552,7 +524,6 @@ class MusicService :
                     sleepTimer = SleepTimer(scope, this)
                     addListener(sleepTimer)
                     addAnalyticsListener(PlaybackStatsListener(false, this@MusicService))
-                    setOffloadEnabled(false)
                 }
 
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -582,7 +553,7 @@ class MusicService :
                 CHANNEL_ID,
                 R.string.music_player
             ).apply {
-                setSmallIcon(R.drawable.ic_velune_concept)
+                setSmallIcon(R.drawable.ic_spectra_ghost)
             }
         )
         
@@ -621,11 +592,24 @@ class MusicService :
             }
         }
 
-        combine(playerVolume, normalizeFactor, audioFocusVolumeFactor, playbackFadeFactor) { playerVolume, normalizeFactor, audioFocusVolumeFactor, playbackFadeFactor ->
-            playerVolume * normalizeFactor * audioFocusVolumeFactor * playbackFadeFactor
+        combine(playerVolume, audioFocusVolumeFactor, playbackFadeFactor, resumeFadeFactor) { playerVolume, audioFocusVolumeFactor, playbackFadeFactor, resumeFadeFactor ->
+            playerVolume * audioFocusVolumeFactor * playbackFadeFactor * resumeFadeFactor
         }.collectLatest(scope) { finalVolume ->
             player.volume = finalVolume
         }
+
+        // Normalization + boost run as real gain in LoudnessProcessor (with limiter), not via player.volume,
+        // because player.volume is capped at 1.0 and could only ever make songs quieter.
+        combine(normalizeGainDb, boostGainDb) { norm, boost -> norm + boost }
+            .collectLatest(scope) { loudnessProcessor.gainDb = it }
+
+        dataStore.data
+            .map { it[ImmersiveAudioKey] ?: false }
+            .distinctUntilChanged()
+            .collectLatest(scope) {
+                immersiveProcessor.enabled = it
+                overlapImmersiveProcessor.enabled = it
+            }
 
         playerVolume.debounce(1000).collect(ioScope) { volume ->
             dataStore.edit { settings ->
@@ -728,12 +712,13 @@ class MusicService :
                 playerVolume = playerVolume,
                 audioFocusVolumeFactor = audioFocusVolumeFactor,
                 audioNormalizationEnabled = audioNormalizationEnabled,
-                maxSafeGainFactor = maxSafeGainFactor,
+                boostGainDb = boostGainDb,
+                overlapLoudness = overlapLoudnessProcessor,
                 overlapPlayerFactory = {
                     ExoPlayer
                         .Builder(this)
                         .setMediaSourceFactory(createMediaSourceFactory())
-                        .setRenderersFactory(createRenderersFactory())
+                        .setRenderersFactory(createRenderersFactory(overlapImmersiveProcessor, overlapLoudnessProcessor))
                         .setHandleAudioBecomingNoisy(false)
                         .setWakeMode(C.WAKE_MODE_NETWORK)
                         .setAudioAttributes(
@@ -756,12 +741,19 @@ class MusicService :
         )
 
         dataStore.data
-            .map(::readEqSettingsFromPrefs)
+            .map(AudioEffectsController::settingsFrom)
             .distinctUntilChanged()
-            .collectLatest(scope) { settings ->
-                desiredEqSettings.value = settings
-                applyEqSettingsToEffects(settings)
+            .collectLatest(scope) { settings -> audioEffects.applySettings(settings) }
+
+        // Learn each song's real loudness shape for the waveform while it plays.
+        scope.launch {
+            AudioLevelMeter.level.collect { level ->
+                val duration = player.duration
+                if (player.isPlaying && duration > 0) {
+                    WaveformStore.record(player.currentPosition.toFloat() / duration, level)
+                }
             }
+        }
 
         combine(
             currentFormat,
@@ -775,30 +767,18 @@ class MusicService :
             Timber.tag("AudioNormalization").d("Audio normalization enabled: $normalizeAudio")
             Timber.tag("AudioNormalization").d("Format loudnessDb: ${format?.loudnessDb}, perceptualLoudnessDb: ${format?.perceptualLoudnessDb}")
             
-            normalizeFactor.value =
+            normalizeGainDb.value =
                 if (normalizeAudio) {
                     val loudness = format?.loudnessDb ?: format?.perceptualLoudnessDb
-                    
                     if (loudness != null) {
-                        val loudnessDb = loudness.toFloat()
-                        var factor = 10f.pow(-loudnessDb / 20)
-                        
-                        Timber.tag("AudioNormalization").d("Calculated raw normalization factor: $factor (from loudness: $loudnessDb)")
-                        
-                        if (factor > 1f) {
-                            factor = min(factor, maxSafeGainFactor)
-                            Timber.tag("AudioNormalization").d("Factor capped at maxSafeGainFactor: $factor")
-                        }
-                        
-                        Timber.tag("AudioNormalization").i("Applying normalization factor: $factor")
-                        factor
+                        LoudnessProcessor.normalizationGainDb(loudness.toFloat())
+                            .also { Timber.tag("AudioNormalization").i("Applying normalization gain: $it dB (loudness: $loudness)") }
                     } else {
                         Timber.tag("AudioNormalization").w("Normalization enabled but no loudness data available - no normalization applied")
-                        1f
+                        0f
                     }
                 } else {
-                    Timber.tag("AudioNormalization").d("Normalization disabled - using factor 1.0")
-                    1f
+                    0f
                 }
         }
 
@@ -1047,7 +1027,7 @@ class MusicService :
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
                 hasAudioFocus = true
-                audioFocusVolumeFactor.value = 1f
+                rampFocusVolume(1f)
 
                 if (wasPlayingBeforeAudioFocusLoss) {
                     player.play()
@@ -1059,7 +1039,7 @@ class MusicService :
 
             AudioManager.AUDIOFOCUS_LOSS -> {
                 hasAudioFocus = false
-                audioFocusVolumeFactor.value = 1f
+                rampFocusVolume(1f)
                 wasPlayingBeforeAudioFocusLoss = false
 
                 if (player.isPlaying) {
@@ -1073,7 +1053,7 @@ class MusicService :
 
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 hasAudioFocus = false
-                audioFocusVolumeFactor.value = 1f
+                rampFocusVolume(1f)
                 wasPlayingBeforeAudioFocusLoss = player.isPlaying
 
                 if (player.isPlaying) {
@@ -1089,7 +1069,7 @@ class MusicService :
 
                 wasPlayingBeforeAudioFocusLoss = player.isPlaying
 
-                audioFocusVolumeFactor.value = 0.2f
+                rampFocusVolume(0.25f)
 
                 lastAudioFocusState = focusChange
             }
@@ -1097,7 +1077,7 @@ class MusicService :
             AudioManager.AUDIOFOCUS_GAIN_TRANSIENT -> {
 
                 hasAudioFocus = true
-                audioFocusVolumeFactor.value = 1f
+                rampFocusVolume(1f)
 
                 if (wasPlayingBeforeAudioFocusLoss) {
                     player.play()
@@ -1109,7 +1089,7 @@ class MusicService :
 
             AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK -> {
                 hasAudioFocus = true
-                audioFocusVolumeFactor.value = 1f
+                rampFocusVolume(1f)
 
                 lastAudioFocusState = focusChange
             }
@@ -1144,10 +1124,7 @@ class MusicService :
         return player.isDeviceMuted || player.deviceVolume <= 0
     }
 
-    private fun isTogetherGuestSession(): Boolean {
-        val joined = togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
-        return joined?.role is com.nikhil.yt.together.TogetherRole.Guest
-    }
+    private fun isTogetherGuestSession(): Boolean = together.isGuest
 
     private fun handleDeviceMuteStateChanged() {
         if (!pauseOnDeviceMuteEnabled || isTogetherGuestSession()) {
@@ -1381,64 +1358,16 @@ class MusicService :
         queue: Queue,
         playWhenReady: Boolean = true,
     ) {
-        val joined = togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
-        if (!isTogetherApplyingRemote() && joined?.role is com.nikhil.yt.together.TogetherRole.Guest) {
-            if (!joined.roomState.settings.allowGuestsToControlPlayback) {
-                showTogetherNotice(getString(R.string.not_allowed), key = "GUEST_PLAYQUEUE_DISABLED")
-                return
-            }
+        if (together.isGuest && !together.isApplyingRemote) {
             ensureScopesActive()
             scope.launch(SilentHandler) {
-                val initialStatus =
-                    withContext(Dispatchers.IO) {
-                        queue.getInitialStatus()
-                            .filterExplicit(dataStore.get(HideExplicitKey, false))
-                            .filterVideo(dataStore.get(HideVideoKey, false))
-                    }
-
-                val targetItem =
-                    initialStatus.items.getOrNull(initialStatus.mediaItemIndex)
-                        ?: queue.preloadItem?.toMediaItem()
-
-                val meta = targetItem?.metadata
-                val trackId =
-                    meta?.id?.trim().orEmpty().ifBlank {
-                        targetItem?.mediaId?.trim().orEmpty()
-                    }
-                if (trackId.isBlank()) {
-                    showTogetherNotice(getString(R.string.not_allowed), key = "GUEST_PLAYQUEUE_NO_TRACK")
-                    return@launch
+                val initialStatus = withContext(Dispatchers.IO) {
+                    queue.getInitialStatus()
+                        .filterExplicit(dataStore.get(HideExplicitKey, false))
+                        .filterVideo(dataStore.get(HideVideoKey, false))
                 }
-
-                val track =
-                    com.nikhil.yt.together.TogetherTrack(
-                        id = trackId,
-                        title = meta?.title ?: trackId,
-                        artists = meta?.artists?.map { it.name }.orEmpty(),
-                        durationSec = meta?.duration ?: -1,
-                        thumbnailUrl = meta?.thumbnailUrl,
-                    )
-
-                val ops =
-                    com.nikhil.yt.together.TogetherGuestPlaybackPlanner.planPlayTrackNow(
-                        roomState = joined.roomState,
-                        track = track,
-                        positionMs = initialStatus.position,
-                        playWhenReady = playWhenReady,
-                    )
-
-                if (ops.isEmpty()) {
-                    showTogetherNotice(getString(R.string.not_allowed), key = "GUEST_PLAYQUEUE_BLOCKED")
-                    return@launch
-                }
-
-                showTogetherNotice(getString(R.string.together_requesting_song_change), key = "GUEST_PLAYQUEUE_REQUEST")
-                ops.forEach { op ->
-                    when (op) {
-                        is com.nikhil.yt.together.TogetherGuestOp.Control -> requestTogetherControl(op.action)
-                        is com.nikhil.yt.together.TogetherGuestOp.AddTrack -> requestTogetherAddTrack(op.track, op.mode)
-                    }
-                }
+                val target = initialStatus.items.getOrNull(initialStatus.mediaItemIndex) ?: queue.preloadItem?.toMediaItem()
+                if (target != null) together.requestPlayNow(target, initialStatus.position, playWhenReady)
             }
             return
         }
@@ -1447,7 +1376,8 @@ class MusicService :
         currentQueue = queue
         queueTitle = null
         val permanentShuffle = dataStore.get(PermanentShuffleKey, false)
-        if (!permanentShuffle) {
+        val shufflePlay = queue.shuffle
+        if (!permanentShuffle && !shufflePlay) {
             player.shuffleModeEnabled = false
         }
         
@@ -1460,10 +1390,16 @@ class MusicService :
             player.playWhenReady = playWhenReady
         }
         scope.launch(SilentHandler) {
-            val initialStatus =
+            var initialStatus =
                 withContext(Dispatchers.IO) {
                     queue.getInitialStatus().filterExplicit(dataStore.get(HideExplicitKey, false)).filterVideo(dataStore.get(HideVideoKey, false))
                 }
+            if (shufflePlay && initialStatus.items.isNotEmpty()) {
+                // Smart first song; the rest of the order is applied once items are set (shuffle mode is on).
+                val tracks = adaptiveTracks(initialStatus.items.map { it.mediaId })
+                initialStatus = initialStatus.copy(mediaItemIndex = AdaptiveShuffle.order(tracks, -1)[0], position = 0L)
+                player.shuffleModeEnabled = true
+            }
             if (initialStatus.title != null) {
                 queueTitle = initialStatus.title
             }
@@ -1520,7 +1456,7 @@ class MusicService :
                             }
 
                             if (player.shuffleModeEnabled) {
-                                applyCurrentFirstShuffleOrder()
+                                applyCurrentFirstShuffleOrder(keepHistory = true)
                             }
                         } catch (e: Exception) {
                             Timber.e(e, "Failed to load deferred queue items")
@@ -1531,28 +1467,80 @@ class MusicService :
         }
     }
 
-    private fun applyCurrentFirstShuffleOrder() {
+    /**
+     * Smart shuffle (see [AdaptiveShuffle]). Applies an instant order from the skip/heard memory so shuffle is never
+     * delayed, then refines it with play counts and download dates from the database.
+     * [keepHistory]: the queue only grew (e.g. the rest of a big list loaded) - songs already played this
+     * shuffle stay played instead of being reshuffled back into the upcoming songs.
+     */
+    private fun applyCurrentFirstShuffleOrder(keepHistory: Boolean = false) {
         val count = player.mediaItemCount
         if (count <= 1) return
-        val currentIndex = player.currentMediaItemIndex.coerceIn(0, count - 1)
-        val shuffledIndices = IntArray(count) { it }
-        shuffledIndices.shuffle()
-        val currentPos = shuffledIndices.indexOf(currentIndex)
-        if (currentPos >= 0) {
-            shuffledIndices[currentPos] = shuffledIndices[0]
+        val ids = List(count) { player.getMediaItemAt(it).mediaId }
+        if (!keepHistory) {
+            playedThisShuffle.clear()
+            player.currentMediaItem?.mediaId?.let(playedThisShuffle::add)
         }
-        shuffledIndices[0] = currentIndex
-        player.setShuffleOrder(DefaultShuffleOrder(shuffledIndices, System.currentTimeMillis()))
+        setShuffleOrder(ids.map(::memoryTrack), keepHistory)
+
+        adaptiveShuffleJob?.cancel()
+        adaptiveShuffleJob = scope.launch(SilentHandler) {
+            val tracks = adaptiveTracks(ids)
+            // Queue changed while we were reading the database: a newer call will handle it.
+            if (!player.shuffleModeEnabled || player.mediaItemCount != count ||
+                List(count) { player.getMediaItemAt(it).mediaId } != ids
+            ) return@launch
+            setShuffleOrder(tracks, keepHistory = true) // history is now our own order from just above
+        }
+    }
+
+    private fun memoryTrack(id: String) = AdaptiveShuffle.Track(
+        skippedRecently = skipMemory.recentAt(id) != null,
+        heardAt = heardMemory.recentAt(id),
+    )
+
+    private fun setShuffleOrder(tracks: List<AdaptiveShuffle.Track>, keepHistory: Boolean) {
+        val currentIndex = player.currentMediaItemIndex.coerceIn(0, tracks.size - 1)
+        val history = if (keepHistory) shuffleHistory(currentIndex) else emptyList()
+        val order = AdaptiveShuffle.order(tracks, currentIndex, history = history)
+        player.setShuffleOrder(DefaultShuffleOrder(order, System.currentTimeMillis()))
+    }
+
+    /** Songs before the current one in the active shuffle order (= already played this shuffle), oldest first. */
+    private fun shuffleHistory(currentIndex: Int): List<Int> {
+        val timeline = player.currentTimeline
+        if (timeline.isEmpty || !player.shuffleModeEnabled) return emptyList()
+        val out = ArrayList<Int>()
+        var i = timeline.getPreviousWindowIndex(currentIndex, REPEAT_MODE_OFF, true)
+        while (i != C.INDEX_UNSET && out.size < timeline.windowCount) {
+            // Only songs really played: items inserted later land at random spots, some before the current one.
+            if (timeline.getWindow(i, Timeline.Window()).mediaItem.mediaId in playedThisShuffle) out.add(i)
+            i = timeline.getPreviousWindowIndex(i, REPEAT_MODE_OFF, true)
+        }
+        return out.asReversed()
+    }
+
+    private suspend fun adaptiveTracks(ids: List<String>): List<AdaptiveShuffle.Track> = withContext(Dispatchers.IO) {
+        // chunked: SQLite caps bound parameters at 999
+        val songs = ids.distinct().chunked(900).flatMap { database.getSongsByIds(it) }.associate { it.id to it.song }
+        val downloaded = runCatching { downloadCache.keys }.getOrDefault(emptySet())
+        val now = LocalDateTime.now()
+        ids.map { id ->
+            val song = songs[id]
+            AdaptiveShuffle.Track(
+                plays = song?.takeIf { it.duration > 0 }?.let { it.totalPlayTime / (it.duration * 1000f) } ?: 0f,
+                // dateDownload defaults to "now" for every DB row, so only trust it for songs actually downloaded.
+                downloadedDaysAgo = song?.dateDownload?.takeIf { id in downloaded }
+                    ?.let { java.time.Duration.between(it, now).toMinutes() / 1440f },
+                skippedRecently = skipMemory.recentAt(id) != null,
+                heardAt = heardMemory.recentAt(id),
+            )
+        }
     }
 
     fun startRadioSeamlessly() {
-        val joined = togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
-        if (!isTogetherApplyingRemote() && joined?.role is com.nikhil.yt.together.TogetherRole.Guest) {
-            if (!joined.roomState.settings.allowGuestsToControlPlayback) {
-                showTogetherNotice(getString(R.string.not_allowed), key = "GUEST_RADIO_DISABLED")
-                return
-            }
-            showTogetherNotice(getString(R.string.not_allowed), key = "GUEST_RADIO_UNSUPPORTED")
+        if (together.isGuest && !together.isApplyingRemote) {
+            together.notice(getString(R.string.together_host_controls_playback))
             return
         }
         suppressAutoPlayback = false
@@ -1753,13 +1741,30 @@ class MusicService :
                                     .toList()
                             }
 
+                        // Smart feed: also pull songs related to what you've enjoyed most this session,
+                        // then rank everything by your taste (with exploration + artist variety).
+                        val moodSeed = taste.model.sessionSeed()?.takeIf { it != seedMediaId }
+                        val moodCandidates =
+                            moodSeed?.let { s ->
+                                withContext(Dispatchers.IO) {
+                                    YouTube.next(WatchEndpoint(videoId = s)).getOrNull()?.relatedEndpoint
+                                        ?.let { YouTube.related(it).getOrNull()?.songs }
+                                }
+                            }.orEmpty()
+                                .map { it.toMediaItem() }
+                                .filter { it.mediaId !in queueIds }
+                                .filterExplicit(hideExplicit)
+                                .filterVideo(hideVideo)
+                                .take(25)
+                        val smartPool = taste.rank((pool + moodCandidates).distinctBy { it.mediaId })
+
                         if (automixSeedMediaId != seedMediaId) {
                             automixLoading.value = false
                             return@onSuccess
                         }
 
-                        automixItems.value = pool
-                        if (pool.isEmpty()) {
+                        automixItems.value = smartPool
+                        if (smartPool.isEmpty()) {
                             automixError.value = getString(R.string.error_no_similar_songs)
                         }
                         automixLoading.value = false
@@ -1930,29 +1935,13 @@ class MusicService :
         player.stop()
         player.clearMediaItems()
         abandonAudioFocus()
-        closeAudioEffectSession()
+        audioEffects.close()
         consecutivePlaybackErr = 0
     }
 
     fun playNext(items: List<MediaItem>) {
-        val joined = togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
-        if (joined?.role is com.nikhil.yt.together.TogetherRole.Guest) {
-            if (!joined.roomState.settings.allowGuestsToAddTracks) {
-                return
-            }
-            val tracks =
-                items.mapNotNull { it.metadata }.map { meta ->
-                    com.nikhil.yt.together.TogetherTrack(
-                        id = meta.id,
-                        title = meta.title,
-                        artists = meta.artists.map { it.name },
-                        durationSec = meta.duration,
-                        thumbnailUrl = meta.thumbnailUrl,
-                    )
-                }
-            tracks.asReversed().forEach { track ->
-                requestTogetherAddTrack(track, com.nikhil.yt.together.AddTrackMode.PLAY_NEXT)
-            }
+        if (together.isGuest) {
+            together.requestAddTracks(items, com.nikhil.yt.together.AddTrackMode.PLAY_NEXT)
             return
         }
         suppressAutoPlayback = false
@@ -1964,1151 +1953,13 @@ class MusicService :
     }
 
     fun addToQueue(items: List<MediaItem>) {
-        val joined = togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
-        if (joined?.role is com.nikhil.yt.together.TogetherRole.Guest) {
-            if (!joined.roomState.settings.allowGuestsToAddTracks) {
-                return
-            }
-            val tracks =
-                items.mapNotNull { it.metadata }.map { meta ->
-                    com.nikhil.yt.together.TogetherTrack(
-                        id = meta.id,
-                        title = meta.title,
-                        artists = meta.artists.map { it.name },
-                        durationSec = meta.duration,
-                        thumbnailUrl = meta.thumbnailUrl,
-                    )
-                }
-            tracks.forEach { track ->
-                requestTogetherAddTrack(track, com.nikhil.yt.together.AddTrackMode.ADD_TO_QUEUE)
-            }
+        if (together.isGuest) {
+            together.requestAddTracks(items, com.nikhil.yt.together.AddTrackMode.ADD_TO_QUEUE)
             return
         }
         suppressAutoPlayback = false
         player.addMediaItems(items)
         player.prepare()
-    }
-
-    fun startTogetherHost(
-        port: Int,
-        displayName: String,
-        settings: com.nikhil.yt.together.TogetherRoomSettings,
-    ) {
-        ensureScopesActive()
-        scope.launch(SilentHandler) {
-            togetherSessionState.value = com.nikhil.yt.together.TogetherSessionState.Idle
-        }
-
-        ioScope.launch(SilentHandler) {
-            stopTogetherInternal()
-            togetherIsOnlineSession = false
-
-            val localIp = getLocalIpv4Address()
-            val sessionId = java.util.UUID.randomUUID().toString()
-            val sessionKey = java.util.UUID.randomUUID().toString()
-            val joinInfo =
-                com.nikhil.yt.together.TogetherJoinInfo(
-                    host = localIp ?: "127.0.0.1",
-                    port = port,
-                    sessionId = sessionId,
-                    sessionKey = sessionKey,
-                )
-            val joinLink = com.nikhil.yt.together.TogetherLink.encode(joinInfo)
-
-            val server =
-                com.nikhil.yt.together.TogetherServer(
-                    scope = ioScope,
-                    sessionId = sessionId,
-                    sessionKey = sessionKey,
-                    hostDisplayName = displayName.trim().ifBlank { getString(R.string.app_name) },
-                    initialSettings = settings,
-                )
-
-            server.onEvent = { event ->
-                ioScope.launch(SilentHandler) {
-                    handleTogetherHostEvent(event) { server.currentSettings() }
-                }
-            }
-
-            server.start(port)
-            togetherServer = server
-
-            scope.launch(SilentHandler) {
-                togetherSessionState.value =
-                    com.nikhil.yt.together.TogetherSessionState.Hosting(
-                        sessionId = sessionId,
-                        joinLink = joinLink,
-                        localAddressHint = localIp,
-                        port = port,
-                        settings = settings,
-                        roomState = null,
-                    )
-            }
-
-            togetherBroadcastJob =
-                ioScope.launch(SilentHandler) {
-                    while (togetherServer === server) {
-                        val state = buildTogetherRoomState(sessionId = sessionId, hostId = togetherHostId)
-                        server.broadcastRoomState(state)
-                        scope.launch(SilentHandler) {
-                            val hosting = togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Hosting
-                            if (hosting?.sessionId == sessionId) {
-                                togetherSessionState.value =
-                                    hosting.copy(
-                                        settings = server.currentSettings(),
-                                        roomState = state.copy(
-                                            participants = server.currentParticipants(),
-                                            settings = server.currentSettings(),
-                                        ),
-                                    )
-                            }
-                        }
-                        kotlinx.coroutines.delay(750)
-                    }
-                }
-        }
-    }
-
-    private fun togetherOnlineErrorMessage(t: Throwable): String {
-        if (t is com.nikhil.yt.together.TogetherOnlineApiException) {
-            val code = t.statusCode
-            return when {
-                code == 404 -> getString(R.string.together_session_not_found)
-                code != null && code in 500..599 -> getString(R.string.together_server_error)
-                else -> t.message ?: getString(R.string.network_unavailable)
-            }
-        }
-        val root = generateSequence(t) { it.cause }.lastOrNull() ?: t
-        return when (root) {
-            is UnknownHostException -> getString(R.string.together_server_unreachable)
-            is ConnectException -> getString(R.string.together_server_unreachable)
-            is SocketTimeoutException -> getString(R.string.together_connection_timed_out)
-            is javax.net.ssl.SSLHandshakeException -> getString(R.string.together_server_unreachable)
-            else -> getString(R.string.network_unavailable)
-        }
-    }
-
-    fun startTogetherOnlineHost(
-        displayName: String,
-        settings: com.nikhil.yt.together.TogetherRoomSettings,
-    ) {
-        ensureScopesActive()
-        scope.launch(SilentHandler) {
-            togetherSessionState.value = com.nikhil.yt.together.TogetherSessionState.Idle
-        }
-
-        ioScope.launch(SilentHandler) {
-            stopTogetherInternal()
-            togetherIsOnlineSession = true
-
-            val baseUrl = com.nikhil.yt.together.TogetherOnlineEndpoint.baseUrlOrNull(dataStore)
-            if (baseUrl == null) {
-                scope.launch(SilentHandler) {
-                    togetherSessionState.value =
-                        com.nikhil.yt.together.TogetherSessionState.Error(
-                            message = getString(R.string.together_online_not_configured),
-                            recoverable = true,
-                        )
-                }
-                return@launch
-            }
-
-            val togetherToken = "VeluneAdminToken"
-            if (togetherToken == null) {
-                scope.launch(SilentHandler) {
-                    togetherSessionState.value =
-                        com.nikhil.yt.together.TogetherSessionState.Error(
-                            message = getString(R.string.together_token_missing),
-                            recoverable = true,
-                        )
-                }
-                return@launch
-            }
-
-            val api = com.nikhil.yt.together.TogetherOnlineApi(baseUrl = baseUrl, bearerToken = togetherToken)
-            val hostName = displayName.trim().ifBlank { getString(R.string.app_name) }
-
-            val created =
-                runCatching {
-                    api.createSession(
-                        hostDisplayName = hostName,
-                        settings = settings,
-                    )
-                }.getOrElse { t ->
-                    scope.launch(SilentHandler) {
-                        togetherSessionState.value =
-                            com.nikhil.yt.together.TogetherSessionState.Error(
-                                message = togetherOnlineErrorMessage(t),
-                                recoverable = true,
-                            )
-                    }
-                    reportException(t)
-                    return@launch
-                }
-
-            val onlineHost =
-                com.nikhil.yt.together.TogetherOnlineHost(
-                    externalScope = ioScope,
-                    sessionId = created.sessionId,
-                    sessionKey = created.hostKey,
-                    hostId = togetherHostId,
-                    hostDisplayName = hostName,
-                    initialSettings = created.settings,
-                    clientId = getOrCreateTogetherClientId(),
-                    bearerToken = togetherToken,
-                )
-
-            onlineHost.onEvent = { event ->
-                ioScope.launch(SilentHandler) {
-                    handleTogetherHostEvent(event) { onlineHost.currentSettings() }
-                }
-            }
-
-            togetherOnlineHost = onlineHost
-
-            scope.launch(SilentHandler) {
-                togetherSessionState.value =
-                    com.nikhil.yt.together.TogetherSessionState.HostingOnline(
-                        sessionId = created.sessionId,
-                        code = created.code,
-                        settings = created.settings,
-                        roomState = null,
-                    )
-            }
-
-            val wsUrl =
-                com.nikhil.yt.together.TogetherOnlineEndpoint.onlineWebSocketUrlOrNull(
-                    rawWsUrl = created.wsUrl,
-                    baseUrl = baseUrl,
-                )
-            if (wsUrl == null) {
-                scope.launch(SilentHandler) {
-                    togetherSessionState.value =
-                        com.nikhil.yt.together.TogetherSessionState.Error(
-                            message = "Connection failed: Invalid server websocket URL",
-                            recoverable = true,
-                        )
-                }
-                ioScope.launch(SilentHandler) { stopTogetherInternal() }
-                return@launch
-            }
-
-            togetherOnlineConnectJob?.cancel()
-            togetherOnlineConnectJob =
-                ioScope.launch(SilentHandler) {
-                    onlineHost.connect(wsUrl)
-                }
-
-            togetherBroadcastJob =
-                ioScope.launch(SilentHandler) {
-                    while (togetherOnlineHost === onlineHost) {
-                        val state =
-                            buildTogetherRoomState(
-                                sessionId = created.sessionId,
-                                hostId = togetherHostId,
-                            )
-                        onlineHost.broadcastRoomState(state)
-                        scope.launch(SilentHandler) {
-                            val hosting =
-                                togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.HostingOnline
-                            if (hosting?.sessionId == created.sessionId) {
-                                val currentSettings = onlineHost.currentSettings()
-                                togetherSessionState.value =
-                                    hosting.copy(
-                                        settings = currentSettings,
-                                        roomState =
-                                            state.copy(
-                                                participants = onlineHost.currentParticipants(),
-                                                settings = currentSettings,
-                                            ),
-                                    )
-                            }
-                        }
-                        kotlinx.coroutines.delay(750)
-                    }
-                }
-        }
-    }
-
-    fun joinTogether(
-        rawLink: String,
-        displayName: String,
-    ) {
-        ensureScopesActive()
-        val joinInfo = com.nikhil.yt.together.TogetherLink.decode(rawLink)
-        if (joinInfo == null) {
-            scope.launch(SilentHandler) {
-                togetherSessionState.value =
-                    com.nikhil.yt.together.TogetherSessionState.Error(
-                        message = getString(R.string.invalid_link),
-                        recoverable = true,
-                    )
-            }
-            return
-        }
-
-        scope.launch(SilentHandler) {
-            togetherSessionState.value = com.nikhil.yt.together.TogetherSessionState.Joining(joinInfo.toDeepLink())
-        }
-
-        ioScope.launch(SilentHandler) {
-            stopTogetherInternal()
-            togetherIsOnlineSession = false
-            val client =
-                com.nikhil.yt.together.TogetherClient(
-                    ioScope,
-                    clientId = getOrCreateTogetherClientId(),
-                )
-            togetherClient = client
-            togetherClock = com.nikhil.yt.together.TogetherClock()
-            togetherSelfParticipantId = null
-            togetherLastAppliedQueueHash = null
-
-            togetherClientEventsJob?.cancel()
-            togetherClientEventsJob =
-                ioScope.launch(SilentHandler) {
-                client.events.collect { event ->
-                    when (event) {
-                        is com.nikhil.yt.together.TogetherClientEvent.Welcome -> {
-                            togetherSelfParticipantId = event.welcome.participantId
-                            scope.launch(SilentHandler) {
-                                val state = togetherSessionState.value
-                                if (state is com.nikhil.yt.together.TogetherSessionState.Joining) {
-                                    val selfName = displayName.trim().ifBlank { getString(R.string.together_role_guest) }
-                                    val initial =
-                                        com.nikhil.yt.together.TogetherRoomState(
-                                            sessionId = joinInfo.sessionId,
-                                            hostId = togetherHostId,
-                                            participants =
-                                                listOf(
-                                                    com.nikhil.yt.together.TogetherParticipant(
-                                                        id = event.welcome.participantId,
-                                                        name = selfName,
-                                                        isHost = false,
-                                                        isPending = event.welcome.isPending,
-                                                        isConnected = true,
-                                                    ),
-                                                ),
-                                            settings = event.welcome.settings,
-                                            queue = emptyList(),
-                                            queueHash = "",
-                                            currentIndex = 0,
-                                            isPlaying = false,
-                                            positionMs = 0L,
-                                            repeatMode = 0,
-                                            shuffleEnabled = false,
-                                            sentAtElapsedRealtimeMs = android.os.SystemClock.elapsedRealtime(),
-                                        )
-                                    togetherSessionState.value =
-                                        com.nikhil.yt.together.TogetherSessionState.Joined(
-                                            role = com.nikhil.yt.together.TogetherRole.Guest,
-                                            sessionId = joinInfo.sessionId,
-                                            selfParticipantId = event.welcome.participantId,
-                                            roomState = initial,
-                                        )
-                                }
-                            }
-                            startTogetherHeartbeat(joinInfo.sessionId, client)
-                        }
-
-                        is com.nikhil.yt.together.TogetherClientEvent.RoomState -> {
-                            applyRemoteRoomState(event.state)
-                        }
-
-                        is com.nikhil.yt.together.TogetherClientEvent.JoinDecision -> {
-                            if (!event.decision.approved) {
-                                scope.launch(SilentHandler) {
-                                    togetherSessionState.value =
-                                        com.nikhil.yt.together.TogetherSessionState.Error(
-                                            message = getString(R.string.not_allowed),
-                                            recoverable = true,
-                                        )
-                                }
-                                ioScope.launch(SilentHandler) { stopTogetherInternal() }
-                            }
-                        }
-
-                        is com.nikhil.yt.together.TogetherClientEvent.ServerIssue -> {
-                            Timber.tag("Together").w("server issue (lan) code=${event.code.orEmpty()} message=${event.message}")
-                            when (event.code) {
-                                "GUEST_CONTROL_DISABLED" -> {
-                                    showTogetherNotice(event.message, key = "GUEST_CONTROL_DISABLED")
-                                    val joined =
-                                        togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
-                                    if (joined?.role is com.nikhil.yt.together.TogetherRole.Guest) {
-                                        togetherPendingGuestControl = null
-                                        togetherLastSentControlAction = null
-                                        scope.launch(SilentHandler) { applyRemoteRoomState(joined.roomState) }
-                                    }
-                                }
-
-                                "GUEST_ADD_DISABLED" -> {
-                                    showTogetherNotice(event.message, key = "GUEST_ADD_DISABLED")
-                                }
-
-                                "HOST_OFFLINE" -> {
-                                    showTogetherNotice(event.message, key = "HOST_OFFLINE")
-                                }
-
-                                else -> {
-                                    scope.launch(SilentHandler) {
-                                        togetherSessionState.value =
-                                            com.nikhil.yt.together.TogetherSessionState.Error(
-                                                message = event.message,
-                                                recoverable = true,
-                                            )
-                                    }
-                                    ioScope.launch(SilentHandler) { stopTogetherInternal() }
-                                }
-                            }
-                        }
-
-                        is com.nikhil.yt.together.TogetherClientEvent.HeartbeatPong -> {
-                            val clock = togetherClock ?: return@collect
-                            clock.onPong(
-                                sentAtElapsedMs = event.pong.clientElapsedRealtimeMs,
-                                receivedAtElapsedMs = event.receivedAtElapsedRealtimeMs,
-                                serverElapsedMs = event.pong.serverElapsedRealtimeMs,
-                            )
-                        }
-
-                        is com.nikhil.yt.together.TogetherClientEvent.Error -> {
-                            scope.launch(SilentHandler) {
-                                togetherSessionState.value =
-                                    com.nikhil.yt.together.TogetherSessionState.Error(
-                                        message = event.message,
-                                        recoverable = true,
-                                    )
-                            }
-                            ioScope.launch(SilentHandler) { stopTogetherInternal() }
-                        }
-
-                        com.nikhil.yt.together.TogetherClientEvent.Disconnected -> {
-                            val current = togetherSessionState.value
-                            if (current is com.nikhil.yt.together.TogetherSessionState.Idle) return@collect
-                            scope.launch(SilentHandler) {
-                                val currentState = togetherSessionState.value
-                                togetherSessionState.value =
-                                    com.nikhil.yt.together.TogetherSessionState.Error(
-                                        message =
-                                            if (currentState is com.nikhil.yt.together.TogetherSessionState.Joined &&
-                                                currentState.role is com.nikhil.yt.together.TogetherRole.Guest
-                                            ) {
-                                                getString(R.string.together_host_left_session)
-                                            } else {
-                                                getString(R.string.network_unavailable)
-                                            },
-                                        recoverable = true,
-                                    )
-                            }
-                            ioScope.launch(SilentHandler) { stopTogetherInternal() }
-                        }
-                    }
-                }
-            }
-
-            client.connect(joinInfo, displayName.trim().ifBlank { getString(R.string.together_role_guest) })
-        }
-    }
-
-    fun joinTogetherOnline(
-        code: String,
-        displayName: String,
-    ) {
-        ensureScopesActive()
-        val trimmedCode = code.trim()
-        if (trimmedCode.isBlank()) {
-            scope.launch(SilentHandler) {
-                togetherSessionState.value =
-                    com.nikhil.yt.together.TogetherSessionState.Error(
-                        message = getString(R.string.invalid_code),
-                        recoverable = true,
-                    )
-            }
-            return
-        }
-
-        scope.launch(SilentHandler) {
-            togetherSessionState.value = com.nikhil.yt.together.TogetherSessionState.JoiningOnline(trimmedCode)
-        }
-
-        ioScope.launch(SilentHandler) {
-            stopTogetherInternal()
-            togetherIsOnlineSession = true
-
-            val baseUrl = com.nikhil.yt.together.TogetherOnlineEndpoint.baseUrlOrNull(dataStore)
-            if (baseUrl == null) {
-                scope.launch(SilentHandler) {
-                    togetherSessionState.value =
-                        com.nikhil.yt.together.TogetherSessionState.Error(
-                            message = getString(R.string.together_online_not_configured),
-                            recoverable = true,
-                        )
-                }
-                return@launch
-            }
-
-            val togetherToken ="velune_server_token"
-            if (togetherToken == null) {
-                scope.launch(SilentHandler) {
-                    togetherSessionState.value =
-                        com.nikhil.yt.together.TogetherSessionState.Error(
-                            message = getString(R.string.together_token_missing),
-                            recoverable = true,
-                        )
-                }
-                return@launch
-            }
-
-            val api = com.nikhil.yt.together.TogetherOnlineApi(baseUrl = baseUrl, bearerToken = togetherToken)
-            val resolved =
-                runCatching { api.resolveCode(trimmedCode) }
-                    .getOrElse { t ->
-                        scope.launch(SilentHandler) {
-                            togetherSessionState.value =
-                                com.nikhil.yt.together.TogetherSessionState.Error(
-                                    message = togetherOnlineErrorMessage(t),
-                                    recoverable = true,
-                                )
-                        }
-                        reportException(t)
-                        return@launch
-                    }
-
-            val client =
-                com.nikhil.yt.together.TogetherClient(
-                    ioScope,
-                    clientId = getOrCreateTogetherClientId(),
-                    bearerToken = togetherToken,
-                )
-            togetherClient = client
-            togetherClock = com.nikhil.yt.together.TogetherClock()
-            togetherSelfParticipantId = null
-            togetherLastAppliedQueueHash = null
-
-            togetherClientEventsJob?.cancel()
-            togetherClientEventsJob =
-                ioScope.launch(SilentHandler) {
-                    client.events.collect { event ->
-                        when (event) {
-                            is com.nikhil.yt.together.TogetherClientEvent.Welcome -> {
-                                togetherSelfParticipantId = event.welcome.participantId
-                                scope.launch(SilentHandler) {
-                                    val state = togetherSessionState.value
-                                    if (state is com.nikhil.yt.together.TogetherSessionState.JoiningOnline) {
-                                        val selfName = displayName.trim().ifBlank { getString(R.string.together_role_guest) }
-                                        val initial =
-                                            com.nikhil.yt.together.TogetherRoomState(
-                                                sessionId = resolved.sessionId,
-                                                hostId = togetherHostId,
-                                                participants =
-                                                    listOf(
-                                                        com.nikhil.yt.together.TogetherParticipant(
-                                                            id = event.welcome.participantId,
-                                                            name = selfName,
-                                                            isHost = false,
-                                                            isPending = event.welcome.isPending,
-                                                            isConnected = true,
-                                                        ),
-                                                    ),
-                                                settings = event.welcome.settings,
-                                                queue = emptyList(),
-                                                queueHash = "",
-                                                currentIndex = 0,
-                                                isPlaying = false,
-                                                positionMs = 0L,
-                                                repeatMode = 0,
-                                                shuffleEnabled = false,
-                                                sentAtElapsedRealtimeMs = android.os.SystemClock.elapsedRealtime(),
-                                            )
-                                        togetherSessionState.value =
-                                            com.nikhil.yt.together.TogetherSessionState.Joined(
-                                                role = com.nikhil.yt.together.TogetherRole.Guest,
-                                                sessionId = resolved.sessionId,
-                                                selfParticipantId = event.welcome.participantId,
-                                                roomState = initial,
-                                            )
-                                    }
-                                }
-                                startTogetherHeartbeat(resolved.sessionId, client)
-                            }
-
-                            is com.nikhil.yt.together.TogetherClientEvent.RoomState -> {
-                                applyRemoteRoomState(event.state)
-                            }
-
-                            is com.nikhil.yt.together.TogetherClientEvent.JoinDecision -> {
-                                if (!event.decision.approved) {
-                                    scope.launch(SilentHandler) {
-                                        togetherSessionState.value =
-                                            com.nikhil.yt.together.TogetherSessionState.Error(
-                                                message = getString(R.string.not_allowed),
-                                                recoverable = true,
-                                            )
-                                    }
-                                    ioScope.launch(SilentHandler) { stopTogetherInternal() }
-                                }
-                            }
-
-                            is com.nikhil.yt.together.TogetherClientEvent.ServerIssue -> {
-                                Timber.tag("Together").w("server issue (online) code=${event.code.orEmpty()} message=${event.message}")
-                                when (event.code) {
-                                    "GUEST_CONTROL_DISABLED" -> {
-                                        showTogetherNotice(event.message, key = "GUEST_CONTROL_DISABLED")
-                                        val joined =
-                                            togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
-                                        if (joined?.role is com.nikhil.yt.together.TogetherRole.Guest) {
-                                            togetherPendingGuestControl = null
-                                            togetherLastSentControlAction = null
-                                            scope.launch(SilentHandler) { applyRemoteRoomState(joined.roomState) }
-                                        }
-                                    }
-
-                                    "GUEST_ADD_DISABLED" -> {
-                                        showTogetherNotice(event.message, key = "GUEST_ADD_DISABLED")
-                                    }
-
-                                    "HOST_OFFLINE" -> {
-                                        showTogetherNotice(event.message, key = "HOST_OFFLINE")
-                                    }
-
-                                    else -> {
-                                        scope.launch(SilentHandler) {
-                                            togetherSessionState.value =
-                                                com.nikhil.yt.together.TogetherSessionState.Error(
-                                                    message = event.message,
-                                                    recoverable = true,
-                                                )
-                                        }
-                                        ioScope.launch(SilentHandler) { stopTogetherInternal() }
-                                    }
-                                }
-                            }
-
-                            is com.nikhil.yt.together.TogetherClientEvent.HeartbeatPong -> {
-                                val clock = togetherClock ?: return@collect
-                                clock.onPong(
-                                    sentAtElapsedMs = event.pong.clientElapsedRealtimeMs,
-                                    receivedAtElapsedMs = event.receivedAtElapsedRealtimeMs,
-                                    serverElapsedMs = event.pong.serverElapsedRealtimeMs,
-                                )
-                            }
-
-                            is com.nikhil.yt.together.TogetherClientEvent.Error -> {
-                                scope.launch(SilentHandler) {
-                                    togetherSessionState.value =
-                                        com.nikhil.yt.together.TogetherSessionState.Error(
-                                            message = event.message,
-                                            recoverable = true,
-                                        )
-                                }
-                                ioScope.launch(SilentHandler) { stopTogetherInternal() }
-                            }
-
-                            com.nikhil.yt.together.TogetherClientEvent.Disconnected -> {
-                                val current = togetherSessionState.value
-                                if (current is com.nikhil.yt.together.TogetherSessionState.Idle) return@collect
-                                scope.launch(SilentHandler) {
-                                    val currentState = togetherSessionState.value
-                                    togetherSessionState.value =
-                                        com.nikhil.yt.together.TogetherSessionState.Error(
-                                            message =
-                                                if (currentState is com.nikhil.yt.together.TogetherSessionState.Joined &&
-                                                    currentState.role is com.nikhil.yt.together.TogetherRole.Guest
-                                                ) {
-                                                    getString(R.string.together_host_left_session)
-                                                } else {
-                                                    getString(R.string.network_unavailable)
-                                                },
-                                            recoverable = true,
-                                        )
-                                }
-                                ioScope.launch(SilentHandler) { stopTogetherInternal() }
-                            }
-                        }
-                    }
-                }
-
-            val wsUrl =
-                com.nikhil.yt.together.TogetherOnlineEndpoint.onlineWebSocketUrlOrNull(
-                    rawWsUrl = resolved.wsUrl,
-                    baseUrl = baseUrl,
-                )
-            if (wsUrl == null) {
-                scope.launch(SilentHandler) {
-                    togetherSessionState.value =
-                        com.nikhil.yt.together.TogetherSessionState.Error(
-                            message = "Connection failed: Invalid server websocket URL",
-                            recoverable = true,
-                        )
-                }
-                ioScope.launch(SilentHandler) { stopTogetherInternal() }
-                return@launch
-            }
-
-            client.connect(
-                wsUrl = wsUrl,
-                sessionId = resolved.sessionId,
-                sessionKey = resolved.guestKey,
-                displayName = displayName.trim().ifBlank { getString(R.string.together_role_guest) },
-            )
-        }
-    }
-
-    fun leaveTogether() {
-        ensureScopesActive()
-        scope.launch(SilentHandler) {
-            togetherSessionState.value = com.nikhil.yt.together.TogetherSessionState.Idle
-        }
-        ioScope.launch(SilentHandler) { stopTogetherInternal() }
-    }
-
-    fun updateTogetherSettings(settings: com.nikhil.yt.together.TogetherRoomSettings) {
-        val server = togetherServer
-        val onlineHost = togetherOnlineHost
-        if (server == null && onlineHost == null) return
-        ioScope.launch(SilentHandler) {
-            server?.updateSettings(settings)
-            onlineHost?.updateSettings(settings)
-        }
-    }
-
-    fun approveTogetherParticipant(participantId: String, approved: Boolean) {
-        val server = togetherServer
-        val onlineHost = togetherOnlineHost
-        if (server == null && onlineHost == null) return
-        ioScope.launch(SilentHandler) {
-            server?.approveParticipant(participantId, approved)
-            onlineHost?.approveParticipant(participantId, approved)
-        }
-    }
-
-    fun kickTogetherParticipant(participantId: String, reason: String? = null) {
-        val onlineHost = togetherOnlineHost ?: return
-        ioScope.launch(SilentHandler) {
-            onlineHost.kickParticipant(participantId, reason)
-        }
-    }
-
-    fun banTogetherParticipant(participantId: String, reason: String? = null) {
-        val onlineHost = togetherOnlineHost ?: return
-        ioScope.launch(SilentHandler) {
-            onlineHost.banParticipant(participantId, reason)
-        }
-    }
-
-    fun requestTogetherControl(action: com.nikhil.yt.together.ControlAction) {
-        val client =
-            togetherClient ?: run {
-                showTogetherNotice(getString(R.string.network_unavailable), key = "TOGETHER_CLIENT_MISSING")
-                return
-            }
-        val state = togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined ?: return
-        if (state.role !is com.nikhil.yt.together.TogetherRole.Guest) return
-        if (!state.roomState.settings.allowGuestsToControlPlayback) {
-            Timber.tag("Together").i("control blocked locally (disabled) action=${action::class.java.simpleName}")
-            showTogetherNotice(getString(R.string.not_allowed), key = "GUEST_CONTROL_DISABLED_LOCAL")
-            return
-        }
-        val now = android.os.SystemClock.elapsedRealtime()
-        val lastAction = togetherLastSentControlAction
-        val lastAt = togetherLastSentControlAtElapsedMs
-        if (lastAction == action && now - lastAt < 350L) return
-        togetherLastSentControlAction = action
-        togetherLastSentControlAtElapsedMs = now
-
-        val timeout = if (togetherIsOnlineSession) 5000L else 2000L
-        togetherPendingGuestControl =
-            when (action) {
-                com.nikhil.yt.together.ControlAction.Play ->
-                    TogetherPendingGuestControl(desiredIsPlaying = true, requestedAtElapsedMs = now, expiresAtElapsedMs = now + timeout)
-                com.nikhil.yt.together.ControlAction.Pause ->
-                    TogetherPendingGuestControl(desiredIsPlaying = false, requestedAtElapsedMs = now, expiresAtElapsedMs = now + timeout)
-                is com.nikhil.yt.together.ControlAction.SeekToIndex ->
-                    TogetherPendingGuestControl(desiredIndex = action.index.coerceAtLeast(0), requestedAtElapsedMs = now, expiresAtElapsedMs = now + timeout)
-                is com.nikhil.yt.together.ControlAction.SeekToTrack ->
-                    TogetherPendingGuestControl(
-                        desiredTrackId = action.trackId.trim().ifBlank { null },
-                        requestedAtElapsedMs = now,
-                        expiresAtElapsedMs = now + timeout,
-                    )
-                else -> togetherPendingGuestControl
-            }
-        client.requestControl(state.sessionId, action)
-    }
-
-    fun requestTogetherAddTrack(
-        track: com.nikhil.yt.together.TogetherTrack,
-        mode: com.nikhil.yt.together.AddTrackMode,
-    ) {
-        val client = togetherClient ?: return
-        val state = togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined ?: return
-        if (state.role !is com.nikhil.yt.together.TogetherRole.Guest) return
-        if (!state.roomState.settings.allowGuestsToAddTracks) {
-            Timber.tag("Together").i("add blocked locally (disabled) mode=$mode trackId=${track.id}")
-            showTogetherNotice(getString(R.string.not_allowed), key = "GUEST_ADD_DISABLED_LOCAL")
-            return
-        }
-        client.requestAddTrack(state.sessionId, track, mode)
-    }
-
-    private suspend fun handleTogetherHostEvent(
-        event: com.nikhil.yt.together.TogetherServerEvent,
-        currentSettings: suspend () -> com.nikhil.yt.together.TogetherRoomSettings,
-    ) {
-        when (event) {
-            is com.nikhil.yt.together.TogetherServerEvent.ControlRequested -> {
-                val settings = currentSettings()
-                if (!settings.allowGuestsToControlPlayback) return
-                applyHostControl(event.request.action)
-            }
-
-            is com.nikhil.yt.together.TogetherServerEvent.AddTrackRequested -> {
-                val settings = currentSettings()
-                if (!settings.allowGuestsToAddTracks) return
-                applyHostAddTrack(event.request.track, event.request.mode)
-            }
-
-            is com.nikhil.yt.together.TogetherServerEvent.Error -> {
-                val current = togetherSessionState.value
-                if (current is com.nikhil.yt.together.TogetherSessionState.Idle) return
-                togetherSessionState.value =
-                    com.nikhil.yt.together.TogetherSessionState.Error(
-                        message = event.message,
-                        recoverable = true,
-                    )
-                ioScope.launch(SilentHandler) { stopTogetherInternal() }
-            }
-
-            else -> Unit
-        }
-    }
-
-    private suspend fun applyHostControl(action: com.nikhil.yt.together.ControlAction) {
-        withContext(Dispatchers.Main) {
-            when (action) {
-                com.nikhil.yt.together.ControlAction.Play -> {
-                    if (!player.playWhenReady) {
-                        player.prepare()
-                        player.playWhenReady = true
-                    }
-                }
-
-                com.nikhil.yt.together.ControlAction.Pause -> {
-                    if (player.playWhenReady) {
-                        player.playWhenReady = false
-                    }
-                }
-
-                is com.nikhil.yt.together.ControlAction.SeekTo -> {
-                    player.seekTo(action.positionMs.coerceAtLeast(0L))
-                    player.prepare()
-                }
-
-                com.nikhil.yt.together.ControlAction.SkipNext -> {
-                    if (player.hasNextMediaItem()) {
-                        player.seekToNext()
-                        player.prepare()
-                        player.playWhenReady = true
-                    }
-                }
-
-                com.nikhil.yt.together.ControlAction.SkipPrevious -> {
-                    if (player.hasPreviousMediaItem()) {
-                        player.seekToPrevious()
-                        player.prepare()
-                        player.playWhenReady = true
-                    }
-                }
-
-                is com.nikhil.yt.together.ControlAction.SeekToTrack -> {
-                    val trackId = action.trackId.trim()
-                    if (trackId.isNotBlank()) {
-                        val idx =
-                            player.mediaItems.indexOfFirst {
-                                val metaId = it.metadata?.id
-                                it.mediaId == trackId || metaId == trackId
-                            }
-                        if (idx >= 0 && idx < player.mediaItemCount) {
-                            player.seekTo(idx, action.positionMs.coerceAtLeast(0L))
-                            player.prepare()
-                        }
-                    }
-                }
-
-                is com.nikhil.yt.together.ControlAction.SeekToIndex -> {
-                    val idx = action.index.coerceAtLeast(0)
-                    if (idx < player.mediaItemCount) {
-                        player.seekTo(idx, action.positionMs.coerceAtLeast(0L))
-                        player.prepare()
-                    }
-                }
-
-                is com.nikhil.yt.together.ControlAction.SetRepeatMode -> {
-                    if (player.repeatMode != action.repeatMode) {
-                        player.repeatMode = action.repeatMode
-                    }
-                }
-
-                is com.nikhil.yt.together.ControlAction.SetShuffleEnabled -> {
-                    if (player.shuffleModeEnabled != action.shuffleEnabled) {
-                        player.shuffleModeEnabled = action.shuffleEnabled
-                    }
-                }
-            }
-        }
-    }
-
-    private suspend fun applyHostAddTrack(
-        track: com.nikhil.yt.together.TogetherTrack,
-        mode: com.nikhil.yt.together.AddTrackMode,
-    ) {
-        val mediaItem = track.toMediaMetadata().toMediaItem()
-        withContext(Dispatchers.Main) {
-            when (mode) {
-                com.nikhil.yt.together.AddTrackMode.PLAY_NEXT -> playNext(listOf(mediaItem))
-                com.nikhil.yt.together.AddTrackMode.ADD_TO_QUEUE -> addToQueue(listOf(mediaItem))
-            }
-        }
-    }
-
-    private suspend fun buildTogetherRoomState(
-        sessionId: String,
-        hostId: String,
-    ): com.nikhil.yt.together.TogetherRoomState {
-        return withContext(Dispatchers.Main) {
-            val tracks =
-                player.mediaItems.mapNotNull { it.metadata }.map { meta ->
-                    com.nikhil.yt.together.TogetherTrack(
-                        id = meta.id,
-                        title = meta.title,
-                        artists = meta.artists.map { it.name },
-                        durationSec = meta.duration,
-                        thumbnailUrl = meta.thumbnailUrl,
-                    )
-                }
-
-            val queueHash = com.nikhil.yt.utils.md5(tracks.joinToString(separator = "|") { it.id })
-
-            com.nikhil.yt.together.TogetherRoomState(
-                sessionId = sessionId,
-                hostId = hostId,
-                settings = com.nikhil.yt.together.TogetherRoomSettings(),
-                participants = emptyList(),
-                queue = tracks,
-                queueHash = queueHash,
-                currentIndex = player.currentMediaItemIndex.coerceAtLeast(0),
-                isPlaying = player.playWhenReady && player.playbackState != Player.STATE_ENDED,
-                positionMs = player.currentPosition.coerceAtLeast(0L),
-                repeatMode = player.repeatMode,
-                shuffleEnabled = player.shuffleModeEnabled,
-                sentAtElapsedRealtimeMs = android.os.SystemClock.elapsedRealtime(),
-            )
-        }
-    }
-
-    private suspend fun applyRemoteRoomState(state: com.nikhil.yt.together.TogetherRoomState) {
-        val pid = togetherSelfParticipantId ?: return
-        val now = android.os.SystemClock.elapsedRealtime()
-
-        val pending = togetherPendingGuestControl
-        if (pending != null) {
-            val currentTrackId = state.queue.getOrNull(state.currentIndex.coerceAtLeast(0))?.id
-            val mismatch =
-                (pending.desiredIsPlaying != null && state.isPlaying != pending.desiredIsPlaying) ||
-                    (pending.desiredIndex != null && state.currentIndex != pending.desiredIndex) ||
-                    (pending.desiredTrackId != null && currentTrackId != pending.desiredTrackId)
-            if (now >= pending.expiresAtElapsedMs) {
-                if ((pending.desiredIndex != null || pending.desiredTrackId != null) &&
-                    now - pending.requestedAtElapsedMs >= 1200L &&
-                    mismatch
-                ) {
-                    showTogetherNotice(getString(R.string.together_song_change_failed), key = "GUEST_SEEK_TIMEOUT")
-                }
-                togetherPendingGuestControl = null
-            } else {
-                if (mismatch) return
-                togetherPendingGuestControl = null
-            }
-        }
-
-        val lastSentAt = togetherLastAppliedRoomStateSentAtElapsedMs
-        val sentAt = state.sentAtElapsedRealtimeMs
-        if (sentAt > 0L && lastSentAt > 0L && sentAt <= lastSentAt) return
-
-        val offset = if (togetherIsOnlineSession) 0L else (togetherClock?.snapshot()?.estimatedOffsetMs ?: 0L)
-        val correctedSentAt = sentAt + offset
-        val estimatedOnlineLatency = if (togetherIsOnlineSession) 1200L else 0L
-        val delta = if (togetherIsOnlineSession) estimatedOnlineLatency else (now - correctedSentAt).coerceAtLeast(0L)
-        val targetPos =
-            if (state.isPlaying) (state.positionMs + delta).coerceAtLeast(0L) else state.positionMs.coerceAtLeast(0L)
-
-        withContext(Dispatchers.Main) {
-            togetherApplyingRemote = true
-            togetherSuppressEchoUntilElapsedMs = android.os.SystemClock.elapsedRealtime() + 450L
-            try {
-                val desiredItems = state.queue.map { it.toMediaMetadata().toMediaItem() }
-                val desiredIds = state.queue.map { it.id }
-                val desiredHash = state.queueHash
-                val localIds = player.mediaItems.mapNotNull { it.metadata?.id ?: it.mediaId }.filter { it.isNotBlank() }
-                val localHash = if (localIds.isEmpty()) "" else com.nikhil.yt.utils.md5(localIds.joinToString(separator = "|"))
-                val needsRebuild =
-                    desiredItems.isNotEmpty() &&
-                        (
-                            (desiredHash.isNotBlank() && desiredHash != localHash) ||
-                                (desiredHash.isBlank() && desiredIds != localIds)
-                        )
-
-                if (desiredItems.isNotEmpty() && needsRebuild) {
-                    togetherLastAppliedQueueHash = desiredHash.ifBlank { localHash }
-                    val startIndex = state.currentIndex.coerceIn(0, desiredItems.lastIndex)
-                    suppressAutoPlayback = false
-                    currentQueue =
-                        com.nikhil.yt.playback.queues.ListQueue(
-                            title = getString(R.string.music_player),
-                            items = desiredItems,
-                            startIndex = startIndex,
-                            position = targetPos,
-                        )
-                    queueTitle = null
-                    player.setMediaItems(desiredItems, startIndex, targetPos)
-                    player.prepare()
-                    player.repeatMode = state.repeatMode
-                    player.shuffleModeEnabled = state.shuffleEnabled
-                    player.playWhenReady = state.isPlaying
-                    togetherLastRemoteAppliedIndex = startIndex
-                } else {
-                    val index = state.currentIndex.coerceAtLeast(0)
-                    val indexChanged = player.mediaItemCount > 0 && index != player.currentMediaItemIndex
-                    val stateChanged =
-                        player.repeatMode != state.repeatMode ||
-                            player.shuffleModeEnabled != state.shuffleEnabled ||
-                            player.playWhenReady != state.isPlaying
-
-                    if (indexChanged) {
-                        player.seekTo(index.coerceAtMost(player.mediaItemCount - 1), targetPos)
-                        player.prepare()
-                        player.playWhenReady = state.isPlaying
-                    } else if (stateChanged) {
-                        if (player.repeatMode != state.repeatMode) player.repeatMode = state.repeatMode
-                        if (player.shuffleModeEnabled != state.shuffleEnabled) player.shuffleModeEnabled = state.shuffleEnabled
-                        if (player.playWhenReady != state.isPlaying) {
-                            player.playWhenReady = state.isPlaying
-                            val drift = kotlin.math.abs(player.currentPosition - targetPos)
-                            if (drift > 100) {
-                                player.seekTo(targetPos)
-                                player.prepare()
-                            }
-                        }
-                    } else {
-                        val drift = kotlin.math.abs(player.currentPosition - targetPos)
-                        val seekThreshold = if (togetherIsOnlineSession) 4000L else 2000L
-                        val threshold = if (state.isPlaying) seekThreshold else 200L
-                        
-                        if (drift > threshold) {
-                            player.seekTo(targetPos)
-                            player.prepare()
-                        }
-                    }
-                    togetherLastRemoteAppliedIndex = index
-                }
-                togetherLastRemoteAppliedPlayWhenReady = state.isPlaying
-                togetherLastAppliedRoomStateSentAtElapsedMs = sentAt
-
-                togetherSessionState.value =
-                    com.nikhil.yt.together.TogetherSessionState.Joined(
-                        role = com.nikhil.yt.together.TogetherRole.Guest,
-                        sessionId = state.sessionId,
-                        selfParticipantId = pid,
-                        roomState = state,
-                    )
-            } finally {
-                togetherApplyingRemote = false
-            }
-        }
-    }
-
-    private fun startTogetherHeartbeat(sessionId: String, client: com.nikhil.yt.together.TogetherClient) {
-        togetherHeartbeatJob?.cancel()
-        togetherHeartbeatJob =
-            ioScope.launch(SilentHandler) {
-                var pingId = 0L
-                while (togetherClient === client) {
-                    val now = android.os.SystemClock.elapsedRealtime()
-                    client.sendHeartbeat(sessionId = sessionId, pingId = pingId++, clientElapsedRealtimeMs = now)
-                    kotlinx.coroutines.delay(2000)
-                }
-            }
-    }
-
-    private suspend fun stopTogetherInternal() {
-        togetherBroadcastJob?.cancel()
-        togetherBroadcastJob = null
-
-        togetherOnlineConnectJob?.cancel()
-        togetherOnlineConnectJob = null
-
-        togetherClientEventsJob?.cancel()
-        togetherClientEventsJob = null
-
-        togetherHeartbeatJob?.cancel()
-        togetherHeartbeatJob = null
-
-        togetherClock = null
-        togetherSelfParticipantId = null
-        togetherLastAppliedQueueHash = null
-        togetherIsOnlineSession = false
-        togetherApplyingRemote = false
-        togetherSuppressEchoUntilElapsedMs = 0L
-        togetherLastAppliedRoomStateSentAtElapsedMs = 0L
-        togetherLastRemoteAppliedPlayWhenReady = null
-        togetherLastRemoteAppliedIndex = -1
-        togetherLastSentControlAtElapsedMs = 0L
-        togetherLastSentControlAction = null
-        togetherPendingGuestControl = null
-
-        try {
-            togetherClient?.disconnect()
-        } catch (_: Exception) {}
-        togetherClient = null
-
-        try {
-            togetherOnlineHost?.disconnect()
-        } catch (_: Exception) {}
-        togetherOnlineHost = null
-
-        try {
-            togetherServer?.stop()
-        } catch (_: Exception) {}
-        togetherServer = null
-    }
-
-    private fun com.nikhil.yt.together.TogetherTrack.toMediaMetadata(): com.nikhil.yt.models.MediaMetadata {
-        return com.nikhil.yt.models.MediaMetadata(
-            id = id,
-            title = title,
-            artists = artists.map { name -> com.nikhil.yt.models.MediaMetadata.Artist(id = null, name = name) },
-            duration = durationSec,
-            thumbnailUrl = thumbnailUrl,
-            album = null,
-            setVideoId = null,
-            explicit = false,
-            liked = false,
-            likedDate = null,
-            inLibrary = null,
-        )
-    }
-
-    private fun getLocalIpv4Address(): String? {
-        return runCatching {
-            java.net.NetworkInterface.getNetworkInterfaces().toList()
-                .asSequence()
-                .filter { it.isUp && !it.isLoopback }
-                .flatMap { it.inetAddresses.toList().asSequence() }
-                .filterIsInstance<java.net.Inet4Address>()
-                .map { it.hostAddress }
-                .firstOrNull { it.isNotBlank() && it != "127.0.0.1" }
-        }.getOrNull()
     }
 
     private fun toggleLibrary() {
@@ -3127,17 +1978,7 @@ class MusicService :
                  syncUtils.likeSong(song)
 
                  if (dataStore.get(AutoDownloadOnLikeKey, false) && song.liked) {
-                     val downloadRequest = androidx.media3.exoplayer.offline.DownloadRequest
-                         .Builder(song.id, song.id.toUri())
-                         .setCustomCacheKey(song.id)
-                         .setData(song.title.toByteArray())
-                         .build()
-                     androidx.media3.exoplayer.offline.DownloadService.sendAddDownload(
-                         this@MusicService,
-                         ExoDownloadService::class.java,
-                         downloadRequest,
-                         false
-                     )
+                     ExoDownloadService.download(this@MusicService, song.id, song.title)
                  }
              }
          }
@@ -3147,216 +1988,8 @@ class MusicService :
         startRadioSeamlessly()
     }
 
-    private fun decodeBandLevelsMb(raw: String?): List<Int> {
-        if (raw.isNullOrBlank()) return emptyList()
-        return runCatching { EqualizerJson.json.decodeFromString<List<Int>>(raw) }.getOrNull() ?: emptyList()
-    }
-
-    private fun encodeBandLevelsMb(levelsMb: List<Int>): String {
-        return runCatching { EqualizerJson.json.encodeToString(levelsMb) }.getOrNull().orEmpty()
-    }
-
-    private fun readEqSettingsFromPrefs(prefs: Preferences): EqSettings {
-        val levels = decodeBandLevelsMb(prefs[EqualizerBandLevelsMbKey])
-        return EqSettings(
-            enabled = prefs[EqualizerEnabledKey] ?: false,
-            bandLevelsMb = levels,
-            outputGainEnabled = prefs[EqualizerOutputGainEnabledKey] ?: false,
-            outputGainMb = prefs[EqualizerOutputGainMbKey] ?: 0,
-            bassBoostEnabled = prefs[EqualizerBassBoostEnabledKey] ?: false,
-            bassBoostStrength = (prefs[EqualizerBassBoostStrengthKey] ?: 0).coerceIn(0, 1000),
-            virtualizerEnabled = prefs[EqualizerVirtualizerEnabledKey] ?: false,
-            virtualizerStrength = (prefs[EqualizerVirtualizerStrengthKey] ?: 0).coerceIn(0, 1000),
-        )
-    }
-
-    fun applyEqFlatPreset() {
-        ioScope.launch {
-            val caps = eqCapabilities.value
-            val bandCount = caps?.bandCount ?: runCatching { equalizer?.numberOfBands?.toInt() }.getOrNull() ?: 0
-            val encoded = encodeBandLevelsMb(List(bandCount.coerceAtLeast(0)) { 0 })
-            dataStore.edit { prefs ->
-                prefs[EqualizerEnabledKey] = true
-                prefs[EqualizerBandLevelsMbKey] = encoded
-                prefs[EqualizerSelectedProfileIdKey] = "flat"
-            }
-        }
-    }
-
-    fun applySystemEqPreset(presetIndex: Int) {
-        scope.launch {
-            ensureAudioEffects(player.audioSessionId)
-            val eq = equalizer ?: return@launch
-            val maxPreset = runCatching { eq.numberOfPresets.toInt() }.getOrNull() ?: 0
-            if (presetIndex !in 0 until maxPreset) return@launch
-
-            runCatching { eq.usePreset(presetIndex.toShort()) }.getOrNull() ?: return@launch
-
-            val bandCount = runCatching { eq.numberOfBands.toInt() }.getOrNull() ?: 0
-            val levels =
-                (0 until bandCount).map { band ->
-                    runCatching { eq.getBandLevel(band.toShort()).toInt() }.getOrNull() ?: 0
-                }
-
-            val encoded = encodeBandLevelsMb(levels)
-            if (encoded.isBlank()) return@launch
-
-            ioScope.launch {
-                dataStore.edit { prefs ->
-                    prefs[EqualizerEnabledKey] = true
-                    prefs[EqualizerBandLevelsMbKey] = encoded
-                    prefs[EqualizerSelectedProfileIdKey] = "system:$presetIndex"
-                }
-            }
-        }
-    }
-
-    private fun resampleLevelsByIndex(levelsMb: List<Int>, targetCount: Int): List<Int> {
-        if (targetCount <= 0) return emptyList()
-        if (levelsMb.isEmpty()) return List(targetCount) { 0 }
-        if (levelsMb.size == targetCount) return levelsMb
-        if (targetCount == 1) return listOf(levelsMb.sum() / levelsMb.size)
-
-        val lastIndex = levelsMb.lastIndex.toFloat().coerceAtLeast(1f)
-        return List(targetCount) { i ->
-            val pos = i.toFloat() * lastIndex / (targetCount - 1).toFloat()
-            val lo = kotlin.math.floor(pos).toInt().coerceIn(0, levelsMb.lastIndex)
-            val hi = kotlin.math.ceil(pos).toInt().coerceIn(0, levelsMb.lastIndex)
-            val t = (pos - lo.toFloat()).coerceIn(0f, 1f)
-            val a = levelsMb[lo]
-            val b = levelsMb[hi]
-            (a + ((b - a) * t)).toInt()
-        }
-    }
-
-    private fun updateEqCapabilitiesFromEffect(eq: Equalizer) {
-        val bandCount = eq.numberOfBands.toInt().coerceAtLeast(0)
-        val range = runCatching { eq.bandLevelRange }.getOrNull()
-        val minMb = range?.getOrNull(0)?.toInt() ?: -1500
-        val maxMb = range?.getOrNull(1)?.toInt() ?: 1500
-        val center =
-            (0 until bandCount).map { band ->
-                (runCatching { eq.getCenterFreq(band.toShort()) }.getOrNull() ?: 0) / 1000
-            }
-        val presets =
-            (0 until eq.numberOfPresets.toInt()).map { idx ->
-                runCatching { eq.getPresetName(idx.toShort()).toString() }.getOrNull() ?: "Preset ${idx + 1}"
-            }
-        eqCapabilities.value =
-            EqCapabilities(
-                bandCount = bandCount,
-                minBandLevelMb = minMb,
-                maxBandLevelMb = maxMb,
-                centerFreqHz = center,
-                systemPresets = presets,
-            )
-    }
-
-    private fun releaseAudioEffects() {
-        audioEffectsSessionId = null
-        try {
-            equalizer?.release()
-        } catch (_: Exception) {
-        }
-        try {
-            bassBoost?.release()
-        } catch (_: Exception) {
-        }
-        try {
-            virtualizer?.release()
-        } catch (_: Exception) {
-        }
-        try {
-            loudnessEnhancer?.release()
-        } catch (_: Exception) {
-        }
-        equalizer = null
-        bassBoost = null
-        virtualizer = null
-        loudnessEnhancer = null
-        eqCapabilities.value = null
-    }
-
-    private fun ensureAudioEffects(sessionId: Int) {
-        if (sessionId <= 0) return
-        if (audioEffectsSessionId == sessionId && equalizer != null) return
-
-        releaseAudioEffects()
-        audioEffectsSessionId = sessionId
-
-        equalizer = runCatching { Equalizer(0, sessionId) }.getOrNull()
-        bassBoost = runCatching { BassBoost(0, sessionId) }.getOrNull()
-        virtualizer = runCatching { Virtualizer(0, sessionId) }.getOrNull()
-        loudnessEnhancer = runCatching { LoudnessEnhancer(sessionId) }.getOrNull()
-
-        equalizer?.let(::updateEqCapabilitiesFromEffect)
-        applyEqSettingsToEffects(desiredEqSettings.value)
-    }
-
-    private fun applyEqSettingsToEffects(settings: EqSettings) {
-        val eq = equalizer ?: return
-        val caps = eqCapabilities.value
-        val bandCount = caps?.bandCount ?: eq.numberOfBands.toInt()
-        val minMb = caps?.minBandLevelMb ?: runCatching { eq.bandLevelRange.getOrNull(0)?.toInt() }.getOrNull() ?: -1500
-        val maxMb = caps?.maxBandLevelMb ?: runCatching { eq.bandLevelRange.getOrNull(1)?.toInt() }.getOrNull() ?: 1500
-
-        val levels = resampleLevelsByIndex(settings.bandLevelsMb, bandCount)
-        runCatching { eq.enabled = settings.enabled }
-
-        for (band in 0 until bandCount) {
-            val levelMb = levels.getOrNull(band)?.coerceIn(minMb, maxMb) ?: 0
-            runCatching { eq.setBandLevel(band.toShort(), levelMb.toShort()) }
-        }
-
-        bassBoost?.let { bb ->
-            runCatching { bb.enabled = settings.bassBoostEnabled }
-            runCatching { bb.setStrength(settings.bassBoostStrength.toShort()) }
-        }
-
-        virtualizer?.let { v ->
-            runCatching { v.enabled = settings.virtualizerEnabled }
-            runCatching { v.setStrength(settings.virtualizerStrength.toShort()) }
-        }
-
-        loudnessEnhancer?.let { le ->
-            val gainMb = if (settings.outputGainEnabled) settings.outputGainMb.coerceIn(-1500, 1500) else 0
-            runCatching { le.setTargetGain(gainMb) }
-            runCatching { le.enabled = settings.outputGainEnabled }
-        }
-    }
-
-    private fun openAudioEffectSession() {
-        if (isAudioEffectSessionOpened) return
-        val sessionId = player.audioSessionId
-        if (sessionId <= 0) return
-        isAudioEffectSessionOpened = true
-        openedAudioSessionId = sessionId
-        ensureAudioEffects(sessionId)
-        sendBroadcast(
-            Intent(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION).apply {
-                putExtra(AudioEffect.EXTRA_AUDIO_SESSION, sessionId)
-                putExtra(AudioEffect.EXTRA_PACKAGE_NAME, packageName)
-                putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_MUSIC)
-            },
-        )
-    }
-
-    private fun closeAudioEffectSession() {
-        if (!isAudioEffectSessionOpened) return
-        isAudioEffectSessionOpened = false
-        val sessionId = openedAudioSessionId ?: player.audioSessionId
-        openedAudioSessionId = null
-        releaseAudioEffects()
-        if (sessionId <= 0) return
-        sendBroadcast(
-            Intent(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION).apply {
-                putExtra(AudioEffect.EXTRA_AUDIO_SESSION, sessionId)
-                putExtra(AudioEffect.EXTRA_PACKAGE_NAME, packageName)
-            },
-        )
-    }
-
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+        mediaItem?.mediaId?.let(playedThisShuffle::add)
     super.onMediaItemTransition(mediaItem, reason)
 
     clearStreamRefreshGuards(
@@ -3367,6 +2000,7 @@ class MusicService :
     )
 
     crossfadeAudio?.onMediaItemTransition(mediaItem, reason)
+    WaveformStore.startSong(this, mediaItem?.mediaId)
 
     val currentIndex = player.currentMediaItemIndex
     val queue = player.mediaItems.mapNotNull { it.metadata }
@@ -3374,35 +2008,23 @@ class MusicService :
         lyricsPreloadManager?.onSongChanged(currentIndex, queue)
     }
 
-    val joined = togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
-    if (joined?.role is com.nikhil.yt.together.TogetherRole.Guest &&
-        reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK
-    ) {
-        if (!joined.roomState.settings.allowGuestsToControlPlayback) {
-            scope.launch(SilentHandler) { applyRemoteRoomState(joined.roomState) }
-            return
+    // Resolve the next song's stream now, so the data source finds it in playbackUrlCache and starts instantly.
+    if (player.hasNextMediaItem()) {
+        val nextId = player.getMediaItemAt(player.nextMediaItemIndex).mediaId
+        val alreadyFresh = playbackUrlCache[nextId]?.second?.let { it > System.currentTimeMillis() } == true
+        if (!alreadyFresh && downloadCache.getCachedSpans(nextId).isEmpty()) {
+            scope.launch(SilentHandler + Dispatchers.IO) {
+                runCatching { resolveAndCacheStream(nextId) }
+            }
         }
-        val now = android.os.SystemClock.elapsedRealtime()
-        val index = player.currentMediaItemIndex.coerceAtLeast(0)
-        val isEcho =
-            isTogetherApplyingRemote() ||
-                (now < togetherSuppressEchoUntilElapsedMs && togetherLastRemoteAppliedIndex == index)
-        if (!isEcho) {
-            val trackId = (mediaItem?.metadata ?: player.currentMetadata)?.id?.trim().orEmpty()
-            requestTogetherControl(
-                if (trackId.isBlank()) {
-                    com.nikhil.yt.together.ControlAction.SeekToIndex(
-                        index = index,
-                        positionMs = player.currentPosition.coerceAtLeast(0L),
-                    )
-                } else {
-                    com.nikhil.yt.together.ControlAction.SeekToTrack(
-                        trackId = trackId,
-                        positionMs = player.currentPosition.coerceAtLeast(0L),
-                    )
-                },
-            )
-        }
+    }
+
+    if (together.isGuest && reason == Player.MEDIA_ITEM_TRANSITION_REASON_SEEK) {
+        together.onGuestSeekedTo(
+            index = player.currentMediaItemIndex.coerceAtLeast(0),
+            trackId = (mediaItem?.metadata ?: player.currentMetadata)?.id,
+            positionMs = player.currentPosition.coerceAtLeast(0L),
+        )
     }
 
     val timelineEmpty = player.currentTimeline.isEmpty || player.mediaItemCount == 0 || player.currentMediaItem == null
@@ -3643,30 +2265,15 @@ class MusicService :
 
 
     override fun onEvents(player: Player, events: Player.Events) {
-    val joined = togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
-    if (joined?.role is com.nikhil.yt.together.TogetherRole.Guest &&
-        events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED)
-    ) {
-        if (!joined.roomState.settings.allowGuestsToControlPlayback) {
-            scope.launch(SilentHandler) { applyRemoteRoomState(joined.roomState) }
-        } else {
-            val now = android.os.SystemClock.elapsedRealtime()
-            val playWhenReady = this.player.playWhenReady
-            val isEcho =
-                isTogetherApplyingRemote() ||
-                    (now < togetherSuppressEchoUntilElapsedMs &&
-                        togetherLastRemoteAppliedPlayWhenReady != null &&
-                        togetherLastRemoteAppliedPlayWhenReady == playWhenReady)
-            if (!isEcho) {
-                val action =
-                    if (playWhenReady) {
-                        com.nikhil.yt.together.ControlAction.Play
-                    } else {
-                        com.nikhil.yt.together.ControlAction.Pause
-                    }
-                requestTogetherControl(action)
-            }
-        }
+    if (events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED) && this.player.playWhenReady) {
+        // Soft 250 ms fade-in on play/resume instead of starting at full level.
+        resumeFadeJob?.cancel()
+        resumeFadeFactor.value = 0f
+        this.player.volume = 0f // apply now, before the AudioTrack starts, not on the next collector pass
+        resumeFadeJob = rampVolume(resumeFadeFactor, 1f, 250L)
+    }
+    if (together.isGuest && events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED)) {
+        together.onGuestPlayWhenReadyChanged(this.player.playWhenReady)
     }
     if (events.contains(Player.EVENT_DEVICE_VOLUME_CHANGED)) {
         handleDeviceMuteStateChanged()
@@ -3680,25 +2287,7 @@ class MusicService :
         wasAutoPausedByDeviceMute = false
     }
     if (events.contains(Player.EVENT_AUDIO_SESSION_ID)) {
-        val newSessionId = this.player.audioSessionId
-        val oldSessionId = openedAudioSessionId
-        if (isAudioEffectSessionOpened && newSessionId > 0 && oldSessionId != null && oldSessionId > 0 && oldSessionId != newSessionId) {
-            sendBroadcast(
-                Intent(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION).apply {
-                    putExtra(AudioEffect.EXTRA_AUDIO_SESSION, oldSessionId)
-                    putExtra(AudioEffect.EXTRA_PACKAGE_NAME, packageName)
-                },
-            )
-            openedAudioSessionId = newSessionId
-            ensureAudioEffects(newSessionId)
-            sendBroadcast(
-                Intent(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION).apply {
-                    putExtra(AudioEffect.EXTRA_AUDIO_SESSION, newSessionId)
-                    putExtra(AudioEffect.EXTRA_PACKAGE_NAME, packageName)
-                    putExtra(AudioEffect.EXTRA_CONTENT_TYPE, AudioEffect.CONTENT_TYPE_MUSIC)
-                },
-            )
-        }
+        audioEffects.onAudioSessionChanged(this.player.audioSessionId)
     }
     if (events.containsAny(
             Player.EVENT_PLAYBACK_STATE_CHANGED,
@@ -3709,9 +2298,9 @@ class MusicService :
             player.playbackState == Player.STATE_BUFFERING || player.playbackState == Player.STATE_READY
         if (isBufferingOrReady && player.playWhenReady) {
             val focusGranted = requestAudioFocus()
-            if (focusGranted) openAudioEffectSession()
+            if (focusGranted) audioEffects.open(player.audioSessionId)
         } else {
-            closeAudioEffectSession()
+            audioEffects.close()
         }
     }
 
@@ -3771,7 +2360,7 @@ class MusicService :
             updateVeluneWidgetState(
                 context = this@MusicService,
                 title = currentMetadata?.title ?: "Not Playing",
-                artist = currentMetadata?.artists?.joinToString(", ") { it.name } ?: "Velune",
+                artist = currentMetadata?.artists?.joinToString(", ") { it.name } ?: "Spectra",
                 isPlaying = isPlaying,
                 thumbnailUrl = currentMetadata?.thumbnailUrl
             )
@@ -3836,21 +2425,52 @@ class MusicService :
   }
 
 
+    override fun onPositionDiscontinuity(
+        oldPosition: Player.PositionInfo,
+        newPosition: Player.PositionInfo,
+        reason: Int,
+    ) {
+        val skipped = oldPosition.mediaItem ?: return
+        // Taste learning: the song played to its end (same index again = repeat-one).
+        if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
+            heardMemory.record(skipped.mediaId)
+            taste.feedback(
+                skipped,
+                if (oldPosition.mediaItemIndex == newPosition.mediaItemIndex) TasteModel.REPEATED else TasteModel.FINISHED,
+            )
+            return
+        }
+        // Smart shuffle: a forward skip before the halfway point means "not now" -> cool the song down for 4 h.
+        if (reason != Player.DISCONTINUITY_REASON_SEEK) return
+        val oldIndex = oldPosition.mediaItemIndex
+        if (oldIndex == newPosition.mediaItemIndex) return // seek within the song / crossfade handoff
+        val timeline = player.currentTimeline
+        if (oldIndex >= timeline.windowCount) return
+        val forward = timeline.getNextWindowIndex(oldIndex, Player.REPEAT_MODE_OFF, player.shuffleModeEnabled) ==
+            newPosition.mediaItemIndex
+        if (!forward) return
+        val durationMs = timeline.getWindow(oldIndex, Timeline.Window()).durationMs
+        val earlySkip = if (durationMs != C.TIME_UNSET && durationMs > 0) {
+            oldPosition.positionMs < durationMs / 2
+        } else {
+            oldPosition.positionMs < 30_000L
+        }
+        if (earlySkip) {
+            taste.feedback(
+                skipped,
+                if (oldPosition.positionMs < 15_000L) TasteModel.SKIPPED_INSTANTLY else TasteModel.SKIPPED_EARLY,
+            )
+            skipMemory.record(skipped.mediaId)
+            scope.launch(Dispatchers.IO + SilentHandler) { forYouEngine.recordSkip(skipped.mediaId) } // teaches For You
+        } else {
+            heardMemory.record(skipped.mediaId) // listened past halfway: counts as heard
+        }
+    }
+
     override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
         updateNotification()
-        val joined = togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
-        if (joined?.role is com.nikhil.yt.together.TogetherRole.Guest) {
-            if (!isTogetherApplyingRemote()) {
-                if (!joined.roomState.settings.allowGuestsToControlPlayback) {
-                    scope.launch(SilentHandler) { applyRemoteRoomState(joined.roomState) }
-                    return
-                }
-                requestTogetherControl(
-                    com.nikhil.yt.together.ControlAction.SetShuffleEnabled(
-                        shuffleEnabled = shuffleModeEnabled,
-                    ),
-                )
-            }
+        if (together.isGuest) {
+            together.onGuestShuffleChanged(shuffleModeEnabled)
             return
         }
         if (shuffleModeEnabled) {
@@ -3864,21 +2484,20 @@ class MusicService :
         }
     }
 
+    /** Keep repeat-one on for [minutes], then switch repeat off so the song finishes and the queue moves on. */
+    fun repeatCurrentFor(minutes: Int) {
+        repeatTimerJob?.cancel()
+        repeatTimerJob = scope.launch {
+            delay(minutes * 60_000L)
+            if (player.repeatMode == REPEAT_MODE_ONE) player.repeatMode = REPEAT_MODE_OFF
+        }
+    }
+
     override fun onRepeatModeChanged(repeatMode: Int) {
+        if (repeatMode != REPEAT_MODE_ONE) repeatTimerJob?.cancel() // user changed it: timer no longer applies
         updateNotification()
-        val joined = togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
-        if (joined?.role is com.nikhil.yt.together.TogetherRole.Guest) {
-            if (!isTogetherApplyingRemote()) {
-                if (!joined.roomState.settings.allowGuestsToControlPlayback) {
-                    scope.launch(SilentHandler) { applyRemoteRoomState(joined.roomState) }
-                    return
-                }
-                requestTogetherControl(
-                    com.nikhil.yt.together.ControlAction.SetRepeatMode(
-                        repeatMode = repeatMode,
-                    ),
-                )
-            }
+        if (together.isGuest) {
+            if (!together.isApplyingRemote) together.requestControl(com.nikhil.yt.together.ControlAction.SetRepeatMode(repeatMode))
             return
         }
         scope.launch {
@@ -3926,6 +2545,9 @@ class MusicService :
                 error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
                     error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ||
                     error.errorCode == PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE ||
+                    // "no playable stream" from YTPlayerUtils: often transient, one fresh resolve usually works
+                    error.errorCode == PlaybackException.ERROR_CODE_REMOTE_ERROR ||
+                    error.errorCode == PlaybackException.ERROR_CODE_IO_UNSPECIFIED ||
                     httpStatusCode in setOf(403, 404, 410, 416, 429, 500, 502, 503)
                 )
 
@@ -3988,7 +2610,7 @@ class MusicService :
                 } catch (t: Throwable) {
                     Timber.tag("MusicService").e(t, "failed to recover from silence-skipper error")
                 }
-                if (dataStore.get(AutoSkipNextOnErrorKey, false)) {
+                if (dataStore.get(AutoSkipNextOnErrorKey, true)) {
                     skipOnError()
                 } else {
                     stopOnError()
@@ -3998,7 +2620,7 @@ class MusicService :
             return
         }
 
-        if (dataStore.get(AutoSkipNextOnErrorKey, false)) {
+        if (dataStore.get(AutoSkipNextOnErrorKey, true)) {
             skipOnError()
         } else {
             stopOnError()
@@ -4104,14 +2726,8 @@ class MusicService :
                 return@Factory dataSpec.withUri(it.first.toUri()).subrange(dataSpec.uriPositionOffset, length)
             }
 
-            val playbackData = runBlocking(Dispatchers.IO) {
-                YTPlayerUtils.playerResponseForPlayback(
-                    mediaId,
-                    audioQuality = audioQuality,
-                    connectivityManager = connectivityManager,
-                    preferredStreamClient = preferredStreamClient,
-                    avoidCodecs = avoidStreamCodecs,
-                )
+            val streamUrl = runBlocking(Dispatchers.IO) {
+                runCatching { resolveAndCacheStream(mediaId) }
             }.getOrElse { throwable ->
                 when (throwable) {
                     is PlaybackException -> throw throwable
@@ -4140,45 +2756,46 @@ class MusicService :
                 }
             }
 
-            val nonNullPlayback = requireNotNull(playbackData) {
-                getString(R.string.error_unknown)
-            }
-            run {
-                val format = nonNullPlayback.format
-                val loudnessDb = nonNullPlayback.audioConfig?.loudnessDb
-                val perceptualLoudnessDb = nonNullPlayback.audioConfig?.perceptualLoudnessDb
-                
-                Timber.tag("AudioNormalization").d("Storing format for $mediaId with loudnessDb: $loudnessDb, perceptualLoudnessDb: $perceptualLoudnessDb")
-                if (loudnessDb == null && perceptualLoudnessDb == null) {
-                    Timber.tag("AudioNormalization").w("No loudness data available from YouTube for video: $mediaId")
-                }
-
-                database.query {
-                    upsert(
-                        FormatEntity(
-                            id = mediaId,
-                            itag = format.itag,
-                            mimeType = format.mimeType.split(";")[0],
-                            codecs = format.mimeType.split("codecs=")[1].removeSurrounding("\""),
-                            bitrate = format.bitrate,
-                            sampleRate = format.audioSampleRate,
-                            contentLength = format.contentLength ?: C.LENGTH_UNSET.toLong(),
-                            loudnessDb = loudnessDb,
-                            perceptualLoudnessDb = perceptualLoudnessDb,
-                            playbackUrl = nonNullPlayback.playbackTracking?.videostatsPlaybackUrl?.baseUrl
-                        )
-                    )
-                }
-                scope.launch(Dispatchers.IO) { recoverSong(mediaId, nonNullPlayback) }
-
-                val streamUrl = nonNullPlayback.streamUrl
-
-                playbackUrlCache[mediaId] =
-                    streamUrl to System.currentTimeMillis() + (nonNullPlayback.streamExpiresInSeconds * 1000L)
-                val length = if (dataSpec.length >= 0) minOf(dataSpec.length, CHUNK_LENGTH) else CHUNK_LENGTH
-                return@Factory dataSpec.withUri(streamUrl.toUri()).subrange(dataSpec.uriPositionOffset, length)
-            }
+            val length = if (dataSpec.length >= 0) minOf(dataSpec.length, CHUNK_LENGTH) else CHUNK_LENGTH
+            dataSpec.withUri(streamUrl.toUri()).subrange(dataSpec.uriPositionOffset, length)
         }
+    }
+
+    /** The single place a stream is resolved: used for playback and for preloading the next song. */
+    private suspend fun resolveAndCacheStream(mediaId: String): String {
+        val playback = YTPlayerUtils.playerResponseForPlayback(
+            mediaId,
+            audioQuality = audioQuality,
+            connectivityManager = connectivityManager,
+            preferredStreamClient = preferredStreamClient,
+            avoidCodecs = avoidStreamCodecs,
+        ).getOrThrow()
+        val format = playback.format
+        val loudnessDb = playback.audioConfig?.loudnessDb
+        val perceptualLoudnessDb = playback.audioConfig?.perceptualLoudnessDb
+        if (loudnessDb == null && perceptualLoudnessDb == null) {
+            Timber.tag("AudioNormalization").w("No loudness data available from YouTube for video: $mediaId")
+        }
+        database.query {
+            upsert(
+                FormatEntity(
+                    id = mediaId,
+                    itag = format.itag,
+                    mimeType = format.mimeType.split(";")[0],
+                    codecs = format.mimeType.substringAfter("codecs=", "").removeSurrounding("\""),
+                    bitrate = format.bitrate,
+                    sampleRate = format.audioSampleRate,
+                    contentLength = format.contentLength ?: C.LENGTH_UNSET.toLong(),
+                    loudnessDb = loudnessDb,
+                    perceptualLoudnessDb = perceptualLoudnessDb,
+                    playbackUrl = playback.playbackTracking?.videostatsPlaybackUrl?.baseUrl
+                )
+            )
+        }
+        scope.launch(Dispatchers.IO) { recoverSong(mediaId, playback) }
+        playbackUrlCache[mediaId] =
+            playback.streamUrl to System.currentTimeMillis() + (playback.streamExpiresInSeconds * 1000L)
+        return playback.streamUrl
     }
 
     fun retryCurrentFromFreshStream() {
@@ -4247,31 +2864,19 @@ class MusicService :
         )
 
     private fun updateAudioOffload(enabled: Boolean) {
-        runCatching {
-            val builder = player.trackSelectionParameters.buildUpon()
-            val audioOffloadPrefsClass = Class.forName("androidx.media3.common.AudioOffloadPreferences")
-            val audioOffloadPrefsBuilderClass = Class.forName("androidx.media3.common.AudioOffloadPreferences\$Builder")
-
-            val modeFieldName = if (enabled) "AUDIO_OFFLOAD_MODE_ENABLED" else "AUDIO_OFFLOAD_MODE_DISABLED"
-            val mode = audioOffloadPrefsClass.getField(modeFieldName).getInt(null)
-
-            val prefsBuilder = audioOffloadPrefsBuilderClass.getDeclaredConstructor().newInstance()
-            audioOffloadPrefsBuilderClass.getMethod("setAudioOffloadMode", Int::class.javaPrimitiveType).invoke(prefsBuilder, mode)
-            val prefs = audioOffloadPrefsBuilderClass.getMethod("build").invoke(prefsBuilder)
-
-            val setMethod =
-                builder.javaClass.methods.firstOrNull { method ->
-                    method.name == "setAudioOffloadPreferences" && method.parameterTypes.size == 1
-                }
-            if (setMethod != null) {
-                setMethod.invoke(builder, prefs)
-                player.trackSelectionParameters = builder.build()
-            }
-        }
-        player.setOffloadEnabled(enabled)
+        val mode =
+            if (enabled) androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_ENABLED
+            else androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_DISABLED
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setAudioOffloadPreferences(
+                androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences.Builder()
+                    .setAudioOffloadMode(mode)
+                    .build()
+            )
+            .build()
     }
 
-    private fun createRenderersFactory() =
+    private fun createRenderersFactory(immersive: ImmersiveProcessor, loudness: LoudnessProcessor) =
         object : DefaultRenderersFactory(this) {
             override fun buildAudioSink(
                 context: Context,
@@ -4283,6 +2888,8 @@ class MusicService :
                 .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                 .setAudioProcessorChain(
                     DefaultAudioSink.DefaultAudioProcessorChain(
+                        immersive, // tone + space first, so the limiter in `loudness` catches its peaks
+                        loudness,
                         SilenceSkippingAudioProcessor(
                             1_500_000L,
                             0.35f,
@@ -4455,13 +3062,12 @@ class MusicService :
                     ObjectOutputStream(fos).use { output ->
                         output.writeObject(payload)
                         output.flush()
+                        // Must sync before use{} closes the stream: syncing a closed fd threw, so no save ever succeeded.
+                        fos.fd.sync()
                     }
-                    fos.fd.sync()
                 }
 
-                if (persistentFile.exists() && !persistentFile.delete()) {
-                    error("Could not replace $fileName")
-                }
+                // rename() atomically replaces the old file on Linux; deleting first could lose both on a crash.
                 if (!tempFile.renameTo(persistentFile)) {
                     error("Could not atomically move $fileName")
                 }
@@ -4523,9 +3129,8 @@ class MusicService :
     override fun onDestroy() {
         super.onDestroy()
         unregisterBluetoothReceiver()
-        try {
-            scope.launch { stopTogetherInternal() }
-        } catch (_: Exception) {}
+        runCatching { together.release() }
+        runCatching { outputRouteWatcher?.stop() }
         try {
             DiscordPresenceManager.stop()
         } catch (_: Exception) {}
@@ -4538,8 +3143,9 @@ class MusicService :
         } catch (_: Exception) {}
         abandonAudioFocus()
         try {
-            releaseAudioEffects()
+            audioEffects.destroy()
         } catch (_: Exception) {}
+        WaveformStore.save(this)
         try {
             if (dataStore.get(PersistentQueueKey, true) && player.mediaItemCount > 0) {
                 val mediaItemsSnapshot = player.mediaItems.mapNotNull { it.metadata }
@@ -4629,17 +3235,13 @@ class MusicService :
         try {
             val state = togetherSessionState.value
             val isHostSessionActive =
-                state is com.nikhil.yt.together.TogetherSessionState.Hosting ||
-                    state is com.nikhil.yt.together.TogetherSessionState.HostingOnline ||
-                    (state is com.nikhil.yt.together.TogetherSessionState.Joined &&
-                        state.role is com.nikhil.yt.together.TogetherRole.Host)
+                state is com.nikhil.yt.together.TogetherSessionState.Hosting
 
             val isPlaybackInactive = player.playbackState == Player.STATE_IDLE || player.mediaItemCount == 0
 
             if (shouldStopServiceOnTaskRemoved(stopMusicOnTaskClearEnabled, isHostSessionActive, isPlaybackInactive)) {
                 if (isHostSessionActive && isPlaybackInactive) {
-                    runCatching { scope.launch { stopTogetherInternal() } }
-                    runCatching { togetherSessionState.value = com.nikhil.yt.together.TogetherSessionState.Idle }
+                    runCatching { together.leave() }
                     stopSelf()
                     return
                 }

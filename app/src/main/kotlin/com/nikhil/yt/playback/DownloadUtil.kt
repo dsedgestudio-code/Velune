@@ -25,7 +25,6 @@ import androidx.media3.exoplayer.offline.DownloadManager
 import androidx.media3.exoplayer.offline.DownloadNotificationHelper
 import com.nikhil.yt.innertube.YouTube
 import com.nikhil.yt.constants.AudioQuality
-import com.nikhil.yt.constants.AudioQualityKey
 import com.nikhil.yt.constants.PlayerStreamClient
 import com.nikhil.yt.constants.PlayerStreamClientKey
 import com.nikhil.yt.db.MusicDatabase
@@ -36,9 +35,10 @@ import com.nikhil.yt.di.PlayerCache
 import com.nikhil.yt.utils.YTPlayerUtils
 import com.nikhil.yt.utils.StreamClientUtils
 import com.nikhil.yt.utils.enumPreference
-import com.nikhil.yt.constants.NetworkMeteredKey
 import com.nikhil.yt.utils.dataStore
-import com.nikhil.yt.utils.get
+import com.nikhil.yt.constants.DownloadWifiOnlyKey
+import com.nikhil.yt.constants.SmartDownloadsKey
+import androidx.media3.exoplayer.scheduler.Requirements
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -56,15 +56,21 @@ constructor(
     val databaseProvider: DatabaseProvider,
     @DownloadCache val downloadCache: Cache,
     @PlayerCache val playerCache: Cache,
+    private val taste: TasteStore,
 ) {
     private val connectivityManager = context.getSystemService<ConnectivityManager>()!!
-    private val audioQuality by enumPreference(context, AudioQualityKey, AudioQuality.AUTO)
     private val preferredStreamClient by enumPreference(context, PlayerStreamClientKey, PlayerStreamClient.ANDROID_VR)
-    private val songUrlCache = HashMap<String, Pair<String, Long>>()
+    private val songUrlCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
+    private val retryAttempts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val pendingUpgrades = java.util.concurrent.ConcurrentHashMap<String, androidx.media3.exoplayer.offline.DownloadRequest>()
+    private val upgradedIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val appContext = context
+    private val smartPrefs = context.getSharedPreferences("smart_downloads", Context.MODE_PRIVATE)
+    private val retryScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     // Anti-Bot & Throttling Fields
-    private val downloadExecutor = Executors.newFixedThreadPool(3)
-    @Volatile private var currentMaxParallelDownloads = 3
+    private val downloadExecutor = Executors.newFixedThreadPool(6)
+    @Volatile private var currentMaxParallelDownloads = 6
     @Volatile private var cooldownUntilMs = 0L
     private val consecutiveThrottleSignals = AtomicInteger(0)
 
@@ -137,13 +143,14 @@ constructor(
                 val remainingMs = cooldownUntilMs - System.currentTimeMillis()
                 if (remainingMs > 0) delay(remainingMs)
 
-                val networkMeteredPref = context.dataStore.get(NetworkMeteredKey, true)
+                // Downloads are kept forever and played offline many times: always fetch the best stream,
+                // regardless of the streaming quality / metered-network settings (which could yield 128k AAC).
                 YTPlayerUtils.playerResponseForPlayback(
                     mediaId,
-                    audioQuality = audioQuality,
+                    audioQuality = AudioQuality.HIGHEST,
                     preferredStreamClient = PlayerStreamClient.ANDROID_VR,
                     connectivityManager = connectivityManager,
-                    networkMetered = networkMeteredPref,
+                    networkMetered = false,
                     avoidCodecs = avoidStreamCodecs,
                 )
             }.getOrThrow()
@@ -156,7 +163,7 @@ constructor(
                         id = mediaId,
                         itag = format.itag,
                         mimeType = format.mimeType.split(";")[0],
-                        codecs = format.mimeType.split("codecs=")[1].removeSurrounding("\""),
+                        codecs = format.mimeType.substringAfter("codecs=", "").removeSurrounding("\""),
                         bitrate = format.bitrate,
                         sampleRate = format.audioSampleRate,
                         contentLength = format.contentLength ?: C.LENGTH_UNSET.toLong(),
@@ -209,6 +216,13 @@ constructor(
             maxParallelDownloads = currentMaxParallelDownloads
             addListener(
                 object : DownloadManager.Listener {
+                    override fun onDownloadRemoved(downloadManager: DownloadManager, download: Download) {
+                        val id = download.request.id
+                        downloads.update { it - id } // previously left behind as a stale "removing" entry
+                        // Quality upgrade: old copy is gone, now fetch it again (always best quality).
+                        pendingUpgrades.remove(id)?.let { downloadManager.addDownload(it) }
+                    }
+
                     override fun onDownloadChanged(
                         downloadManager: DownloadManager,
                         download: Download,
@@ -216,8 +230,14 @@ constructor(
                     ) {
                         if (download.state == Download.STATE_FAILED) {
                             registerThrottleSignal(finalException)
+                            // The cached stream link is probably expired/blocked: a retry must resolve a fresh one.
+                            songUrlCache.remove(download.request.id)
+                            scheduleRetry(download)
                         } else if (download.state == Download.STATE_COMPLETED) {
                             clearThrottleSignal()
+                            songUrlCache.remove(download.request.id)
+                            retryAttempts.remove(download.request.id)
+                            learnFromDownload(download.request.id)
                         }
 
                         downloads.update { map ->
@@ -231,6 +251,18 @@ constructor(
         }
 
     init {
+        // "Download on Wi-Fi only": DownloadManager pauses queued downloads until an unmetered network is back.
+        retryScope.launch {
+            context.dataStore.data.map { it[DownloadWifiOnlyKey] ?: false }.distinctUntilChanged().collect { wifiOnly ->
+                downloadManager.requirements = Requirements(
+                    if (wifiOnly) Requirements.NETWORK_UNMETERED else Requirements.NETWORK,
+                )
+            }
+        }
+        retryScope.launch {
+            context.dataStore.data.map { it[SmartDownloadsKey] ?: false }.distinctUntilChanged()
+                .collect { SmartDownloadWorker.schedule(context, it) }
+        }
         CoroutineScope(Dispatchers.IO).launch {
             val result = mutableMapOf<String, Download>()
             val cursor = downloadManager.downloadIndex.getDownloads()
@@ -242,6 +274,91 @@ constructor(
     }
 
     fun getDownload(songId: String): Flow<Download?> = downloads.map { it[songId] }
+
+    private fun completedIds(): List<String> =
+        downloads.value.filterValues { it.state == Download.STATE_COMPLETED }.keys.toList()
+
+    /** Downloads not saved in the best format (mostly from before downloads ignored the streaming quality). */
+    suspend fun lowQualityDownloadIds(): List<String> = withContext(Dispatchers.IO) {
+        val done = completedIds()
+        val formats = done.chunked(900).flatMap { database.formatsByIds(it) }.associateBy { it.id }
+        // Unknown format: leave it alone rather than re-download blindly.
+        done.filter { id -> formats[id]?.let { it.itag !in BEST_AUDIO_ITAGS } == true }
+    }
+
+    /** Re-download in best quality. The old copy must be removed first: re-adding would just reuse its bytes. */
+    fun upgradeDownloads(ids: List<String>) {
+        ids.forEach { id ->
+            val download = downloads.value[id] ?: return@forEach
+            pendingUpgrades[id] = download.request
+            upgradedIds += id
+            androidx.media3.exoplayer.offline.DownloadService.sendRemoveDownload(appContext, ExoDownloadService::class.java, id, false)
+        }
+    }
+
+    /** Downloaded more than [days] ago and not played since. */
+    suspend fun staleDownloadIds(days: Int = 90): List<String> = withContext(Dispatchers.IO) {
+        val cutoff = System.currentTimeMillis() - days * 24L * 60 * 60 * 1000
+        val playedSince = database.songIdsPlayedSince(cutoff).toHashSet()
+        downloads.value.values
+            .filter { it.state == Download.STATE_COMPLETED && it.updateTimeMs < cutoff && it.request.id !in playedSince }
+            .map { it.request.id }
+    }
+
+    fun removeDownloads(ids: List<String>) = ids.forEach {
+        androidx.media3.exoplayer.offline.DownloadService.sendRemoveDownload(appContext, ExoDownloadService::class.java, it, false)
+    }
+
+    /**
+     * Smart offline mix: keep the [limit] songs you're most likely to love downloaded.
+     * Only ever removes songs it added itself, and never ones you've liked since.
+     */
+    suspend fun runSmartDownloads(limit: Int) = withContext(Dispatchers.IO) {
+        val ours = smartPrefs.getStringSet(SMART_IDS_KEY, emptySet()).orEmpty()
+        val candidates = database.songsWithInterest().filter { !it.song.isLocal }
+        val byId = candidates.associateBy { it.id }
+        val target = candidates
+            .map { it to taste.model.score(it.id, it.artists.map { a -> a.id }) }
+            .filter { it.second > SMART_MIN_SCORE }
+            .sortedByDescending { it.second }
+            .take(limit)
+            .map { it.first.id }
+            .toSet()
+        val present = downloads.value.filterValues { it.state != Download.STATE_FAILED }.keys
+        val toRemove = ours.filter { it !in target && byId[it]?.song?.liked != true }
+        val toAdd = target.filter { it !in present }
+        removeDownloads(toRemove)
+        toAdd.forEach { id ->
+            ExoDownloadService.download(appContext, id, (byId[id]?.song?.title ?: id))
+        }
+        smartPrefs.edit().putStringSet(SMART_IDS_KEY, (ours - toRemove.toSet()) + toAdd).apply()
+    }
+
+    /** Auto-retry a failed download twice (after 30 s, then 2 min) instead of leaving it failed until tapped. */
+    private fun scheduleRetry(download: Download) {
+        val id = download.request.id
+        val attempt = (retryAttempts[id] ?: 0) + 1
+        if (attempt > MAX_AUTO_RETRIES) {
+            retryAttempts.remove(id)
+            return
+        }
+        retryAttempts[id] = attempt
+        retryScope.launch {
+            delay(if (attempt == 1) 30_000L else 120_000L)
+            // Only if it's still failed: the user may have removed or retried it meanwhile.
+            if (downloads.value[id]?.state == Download.STATE_FAILED) downloadManager.addDownload(download.request)
+        }
+    }
+
+    /** A download is the strongest "I love this" signal: teach the smart recommender. */
+    private fun learnFromDownload(songId: String) {
+        // Only YOUR downloads teach taste: smart picks would reinforce themselves, upgrades aren't new interest.
+        if (songId in smartPrefs.getStringSet(SMART_IDS_KEY, emptySet()).orEmpty() || songId in upgradedIds) return
+        CoroutineScope(Dispatchers.IO).launch {
+            val artists = runCatching { database.getSongByIdBlocking(songId)?.artists }.getOrNull().orEmpty()
+            taste.feedback(songId, artists.map { it.id }, TasteModel.DOWNLOADED)
+        }
+    }
 
     private fun deviceSupportsMimeType(mimeType: String): Boolean {
         return runCatching {
@@ -312,9 +429,14 @@ constructor(
     }
 
     companion object {
-        private const val DEFAULT_MAX_PARALLEL_DOWNLOADS = 3
+        private const val DEFAULT_MAX_PARALLEL_DOWNLOADS = 6
         private const val MIN_PARALLEL_DOWNLOADS = 1
         private const val SHORT_COOLDOWN_MS = 2_500L
         private const val LONG_COOLDOWN_MS = 8_000L
+        private const val MAX_AUTO_RETRIES = 2
+        /** 251 = Opus ~160k (best without Premium), 141 = AAC 256k, 774 = Opus 256k (Premium). */
+        private val BEST_AUDIO_ITAGS = setOf(251, 141, 774)
+        private const val SMART_IDS_KEY = "ids"
+        private const val SMART_MIN_SCORE = 0.65
     }
 }

@@ -16,6 +16,9 @@ import com.nikhil.yt.models.MediaMetadata
 interface Queue {
     val preloadItem: MediaMetadata?
 
+    /** Start with smart shuffle on: the player picks the order (and the first song). */
+    val shuffle: Boolean get() = false
+
     suspend fun getInitialStatus(): Status
 
     fun hasNextPage(): Boolean

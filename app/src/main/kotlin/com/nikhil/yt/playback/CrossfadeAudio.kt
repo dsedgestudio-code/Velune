@@ -23,7 +23,6 @@ import kotlinx.coroutines.withContext
 import com.nikhil.yt.db.MusicDatabase
 import kotlin.math.abs
 import kotlin.math.min
-import kotlin.math.pow
 
 internal class CrossfadeAudio(
     private val player: ExoPlayer,
@@ -33,7 +32,8 @@ internal class CrossfadeAudio(
     private val playerVolume: MutableStateFlow<Float>,
     private val audioFocusVolumeFactor: MutableStateFlow<Float>,
     private val audioNormalizationEnabled: MutableStateFlow<Boolean>,
-    private val maxSafeGainFactor: Float,
+    private val boostGainDb: MutableStateFlow<Float>,
+    private val overlapLoudness: LoudnessProcessor,
     private val overlapPlayerFactory: () -> ExoPlayer,
 ) {
     private var loopJob: Job? = null
@@ -46,7 +46,6 @@ internal class CrossfadeAudio(
     private var crossfadeTargetMediaId: String? = null
     private var crossfadeStartElapsedMs: Long = 0L
     private var crossfadeActiveDurationMs: Int = 0
-    private var overlapNormalizeFactor: Float = 1f
 
     private var handoffActive = false
     private var handoffStartElapsedMs: Long = 0L
@@ -189,7 +188,7 @@ internal class CrossfadeAudio(
         overlap.playWhenReady = true
         overlap.volume = 0f
 
-        overlapNormalizeFactor = fetchNormalizeFactorForMediaId(nextMediaId)
+        overlapLoudness.gainDb = fetchNormalizeGainDbForMediaId(nextMediaId) + boostGainDb.value
         overlapPrimedIndex = nextIndex
         overlapPrimedMediaId = nextMediaId
     }
@@ -216,7 +215,7 @@ internal class CrossfadeAudio(
         }
 
         val baseOverlapVolume =
-            (playerVolume.value * overlapNormalizeFactor * audioFocusVolumeFactor.value).coerceIn(0f, 1f)
+            (playerVolume.value * audioFocusVolumeFactor.value).coerceIn(0f, 1f)
 
         if (handoffActive) {
             val nowElapsedMs = android.os.SystemClock.elapsedRealtime()
@@ -352,7 +351,6 @@ internal class CrossfadeAudio(
         crossfadeTargetIndex = C.INDEX_UNSET
         crossfadeTargetMediaId = null
         crossfadeActiveDurationMs = 0
-        overlapNormalizeFactor = 1f
         overlapPrimedIndex = C.INDEX_UNSET
         overlapPrimedMediaId = null
 
@@ -364,7 +362,6 @@ internal class CrossfadeAudio(
         crossfadeTargetIndex = C.INDEX_UNSET
         crossfadeTargetMediaId = null
         crossfadeActiveDurationMs = 0
-        overlapNormalizeFactor = 1f
         overlapPrimedIndex = C.INDEX_UNSET
         overlapPrimedMediaId = null
         handoffActive = false
@@ -394,17 +391,15 @@ internal class CrossfadeAudio(
         return overlapPlayerFactory().also { overlapPlayer = it }
     }
 
-    private suspend fun fetchNormalizeFactorForMediaId(mediaId: String): Float {
-        if (!audioNormalizationEnabled.value) return 1f
+    private suspend fun fetchNormalizeGainDbForMediaId(mediaId: String): Float {
+        if (!audioNormalizationEnabled.value) return 0f
 
         val format =
             withContext(Dispatchers.IO) {
                 database.format(mediaId).first()
             }
 
-        val loudness = format?.loudnessDb ?: format?.perceptualLoudnessDb ?: return 1f
-        var factor = 10f.pow((-loudness.toFloat()) / 20f)
-        if (factor > 1f) factor = min(factor, maxSafeGainFactor)
-        return factor
+        val loudness = format?.loudnessDb ?: format?.perceptualLoudnessDb ?: return 0f
+        return LoudnessProcessor.normalizationGainDb(loudness.toFloat())
     }
 }

@@ -132,9 +132,8 @@ class PlayerConnection(
     }
 
     fun seekToNext() {
-        val state = service.togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
-        if (state?.role is com.nikhil.yt.together.TogetherRole.Guest) {
-            service.requestTogetherControl(com.nikhil.yt.together.ControlAction.SkipNext)
+        if (service.together.isGuest) {
+            service.together.requestControl(com.nikhil.yt.together.ControlAction.SkipNext)
             return
         }
         player.seekToNext()
@@ -149,9 +148,8 @@ class PlayerConnection(
     }
 
     fun seekToPrevious() {
-        val state = service.togetherSessionState.value as? com.nikhil.yt.together.TogetherSessionState.Joined
-        if (state?.role is com.nikhil.yt.together.TogetherRole.Guest) {
-            service.requestTogetherControl(com.nikhil.yt.together.ControlAction.SkipPrevious)
+        if (service.together.isGuest) {
+            service.together.requestControl(com.nikhil.yt.together.ControlAction.SkipPrevious)
             return
         }
         player.seekToPrevious()

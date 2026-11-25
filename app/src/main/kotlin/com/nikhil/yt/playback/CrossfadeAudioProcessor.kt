@@ -20,6 +20,8 @@ import kotlin.math.min
  * Custom audio processor that applies crossfade between tracks
  */
 @UnstableApi
+private const val MAX_OUTPUT_BYTES = 16 * 1024 * 1024
+
 class CrossfadeAudioProcessor : AudioProcessor {
     private var inputAudioFormat = AudioFormat.NOT_SET
     private var outputAudioFormat = AudioFormat.NOT_SET
@@ -335,6 +337,14 @@ class CrossfadeAudioProcessor : AudioProcessor {
     }
 
     private fun ensureOutputCapacity(additionalBytes: Int) {
+        // Undrained output used to double forever (suspected cause of app OOM crashes). Drop the oldest audio instead.
+        val overflow = outSizeBytes + additionalBytes - MAX_OUTPUT_BYTES
+        if (overflow > 0 && outCapacityBytes > 0) {
+            val drop = min(overflow, outSizeBytes)
+            timber.log.Timber.w("Crossfade output overflow: dropping $drop bytes")
+            outStartIndex = (outStartIndex + drop) % outCapacityBytes
+            outSizeBytes -= drop
+        }
         val required = outSizeBytes + additionalBytes
         if (outCapacityBytes >= required) return
 

@@ -19,7 +19,6 @@ import androidx.media3.exoplayer.offline.Download
 import androidx.media3.exoplayer.offline.DownloadManager
 import androidx.media3.exoplayer.offline.DownloadNotificationHelper
 import androidx.media3.exoplayer.offline.DownloadService
-import androidx.media3.exoplayer.scheduler.PlatformScheduler
 import androidx.media3.exoplayer.scheduler.Scheduler
 import com.nikhil.yt.R
 import dagger.hilt.android.AndroidEntryPoint
@@ -27,13 +26,9 @@ import javax.inject.Inject
 
 
 @AndroidEntryPoint
-class ExoDownloadService : DownloadService(
-    NOTIFICATION_ID,
-    1000L,
-    CHANNEL_ID,
-    R.string.downloading,
-    0
-) {
+// Never foreground: Android 12+ throws ForegroundServiceStartNotAllowedException when a download update
+// promotes the service while the app is in the background, which crashed the app repeatedly.
+class ExoDownloadService : DownloadService(FOREGROUND_NOTIFICATION_ID_NONE) {
     @Inject
     lateinit var downloadUtil: DownloadUtil
 
@@ -47,9 +42,18 @@ class ExoDownloadService : DownloadService(
     }
 
 
+    override fun onCreate() {
+        // The base class only creates the channel when it has a foreground notification; failure alerts still use it.
+        NotificationUtil.createNotificationChannel(
+            this, CHANNEL_ID, R.string.downloading, 0, NotificationUtil.IMPORTANCE_LOW
+        )
+        super.onCreate()
+    }
+
     override fun getDownloadManager() = downloadUtil.downloadManager
 
-    override fun getScheduler(): Scheduler = PlatformScheduler(this, JOB_ID)
+    // No scheduler: its restarts also try to go foreground from the background. DownloadManager resumes on next app start.
+    override fun getScheduler(): Scheduler? = null
 
     override fun getForegroundNotification(
         downloads: MutableList<Download>,
@@ -111,5 +115,14 @@ class ExoDownloadService : DownloadService(
         const val NOTIFICATION_ID = 1
         const val JOB_ID = 1
         const val REMOVE_ALL_PENDING_DOWNLOADS = "REMOVE_ALL_PENDING_DOWNLOADS"
+
+        /** The one way to queue a song download; [title] is shown in download notifications. */
+        fun download(context: Context, songId: String, title: String) {
+            val request = androidx.media3.exoplayer.offline.DownloadRequest.Builder(songId, android.net.Uri.parse(songId))
+                .setCustomCacheKey(songId)
+                .setData(title.toByteArray())
+                .build()
+            sendAddDownload(context, ExoDownloadService::class.java, request, false)
+        }
     }
 }

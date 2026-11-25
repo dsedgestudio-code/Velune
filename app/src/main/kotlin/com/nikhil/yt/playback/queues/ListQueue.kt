@@ -16,6 +16,8 @@ class ListQueue(
     val items: List<MediaItem>,
     val startIndex: Int = 0,
     val position: Long = 0L,
+    /** Play with smart shuffle on; the player picks the order (and the first song) instead of a pre-shuffled list. */
+    override val shuffle: Boolean = false,
 ) : Queue {
     override val preloadItem: MediaMetadata? = null
 
