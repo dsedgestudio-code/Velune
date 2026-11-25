@@ -172,6 +172,11 @@ fun YearInMusicScreen(
 
     val availableYears by viewModel.availableYears.collectAsState()
     val selectedYear by viewModel.selectedYear.collectAsState()
+    val selectedMonth by viewModel.selectedMonth.collectAsState()
+    val periodLabel = selectedMonth?.let {
+        java.time.YearMonth.of(selectedYear, it)
+            .format(java.time.format.DateTimeFormatter.ofPattern("MMMM yyyy", java.util.Locale.getDefault()))
+    } ?: selectedYear.toString()
     val topSongsStats by viewModel.topSongsStats.collectAsState()
     val topSongs by viewModel.topSongs.collectAsState()
     val topArtists by viewModel.topArtists.collectAsState()
@@ -215,7 +220,7 @@ fun YearInMusicScreen(
         }
 
         YearInMusicStoryPager(
-            year = selectedYear,
+            year = periodLabel,
             totalListeningTime = totalListeningTime,
             totalSongsPlayed = totalSongsPlayed,
             topSongsStats = topSongsStats,
@@ -347,7 +352,7 @@ fun YearInMusicScreen(
                     },
                     actions = {
                         PremiumYearChip(
-                            year = selectedYear,
+                            year = periodLabel,
                             onClick = { isYearPickerOpen = true }
                         )
                     },
@@ -363,8 +368,13 @@ fun YearInMusicScreen(
             PremiumYearPickerDialog(
                 availableYears = availableYears,
                 selectedYear = selectedYear,
+                selectedMonth = selectedMonth,
                 onSelectYear = { year ->
                     viewModel.selectedYear.value = year
+                    viewModel.selectedMonth.value = null
+                },
+                onSelectMonth = { month ->
+                    viewModel.selectedMonth.value = month
                     isYearPickerOpen = false
                 },
                 onDismiss = { isYearPickerOpen = false }
@@ -589,7 +599,7 @@ private fun PulsingDot() {
 
 @Composable
 private fun PremiumYearChip(
-    year: Int,
+    year: String,
     onClick: () -> Unit
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "chipGlow")
@@ -633,7 +643,7 @@ private fun PremiumYearChip(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Text(
-                text = year.toString(),
+                text = year,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 color = SoftWhite
@@ -712,12 +722,32 @@ private fun PremiumShareButton(
 }
 
 @Composable
+private fun PeriodChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (selected) NeonPink else GlassWhite.copy(alpha = 0.12f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+    ) {
+        Text(label, color = SoftWhite, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, fontSize = 14.sp)
+    }
+}
+
+@Composable
 private fun PremiumYearPickerDialog(
     availableYears: List<Int>,
     selectedYear: Int,
+    selectedMonth: Int?,
     onSelectYear: (Int) -> Unit,
+    onSelectMonth: (Int?) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val now = java.time.YearMonth.now()
+    val lastMonth = if (selectedYear == now.year) now.monthValue else 12
+    val monthNames = (1..lastMonth).map { m ->
+        m to java.time.Month.of(m).getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.getDefault())
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = RichBlack,
@@ -739,6 +769,15 @@ private fun PremiumYearPickerDialog(
             }
         },
         text = {
+          Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    PeriodChip(stringResource(R.string.whole_year), selectedMonth == null) { onSelectMonth(null) }
+                }
+                items(monthNames) { (m, name) ->
+                    PeriodChip(name, selectedMonth == m) { onSelectMonth(m) }
+                }
+            }
             LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 items(availableYears) { year ->
                     val isSelected = year == selectedYear
@@ -773,6 +812,7 @@ private fun PremiumYearPickerDialog(
                     }
                 }
             }
+          }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
@@ -928,7 +968,7 @@ private fun PremiumStoryNavBar(
 
 @Composable
 private fun YearInMusicStoryPager(
-    year: Int,
+    year: String,
     totalListeningTime: Long,
     totalSongsPlayed: Long,
     topSongsStats: List<SongWithStats>,
@@ -1118,7 +1158,7 @@ private fun YearInMusicStoryPager(
 
 @Composable
 private fun PremiumHeroStoryCard(
-    year: Int,
+    year: String,
     totalListeningTime: Long,
     totalSongsPlayed: Long
 ) {
@@ -1166,7 +1206,7 @@ private fun PremiumHeroStoryCard(
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = stringResource(R.string.your_year_in_music, year),
+                text = stringResource(R.string.your_period_in_music, year),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Medium,
                 color = SoftWhite.copy(alpha = 0.8f)
@@ -1175,7 +1215,7 @@ private fun PremiumHeroStoryCard(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(
-                text = year.toString(),
+                text = year,
                 style = MaterialTheme.typography.displayLarge.copy(fontSize = 96.sp),
                 fontWeight = FontWeight.Black,
                 color = SoftWhite
@@ -1649,7 +1689,7 @@ private fun PremiumTopAlbumStoryCard(
 
 @Composable
 private fun PremiumSummaryStoryCard(
-    year: Int,
+    year: String,
     totalListeningTime: Long,
     totalSongsPlayed: Long,
     topSong: SongWithStats?,
@@ -1702,7 +1742,7 @@ private fun PremiumSummaryStoryCard(
                             color = SoftWhite
                         )
                         Text(
-                            text = joinByBullet(stringResource(R.string.year_in_music), year.toString()),
+                            text = joinByBullet(stringResource(R.string.year_in_music), year),
                             style = MaterialTheme.typography.bodySmall,
                             color = SoftWhite.copy(alpha = 0.7f)
                         )
@@ -1836,7 +1876,7 @@ private fun PremiumSummaryStoryCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = joinByBullet("Spectra", year.toString()),
+                        text = joinByBullet("Spectra", year),
                         style = MaterialTheme.typography.labelMedium,
                         color = SoftWhite.copy(alpha = 0.5f)
                     )

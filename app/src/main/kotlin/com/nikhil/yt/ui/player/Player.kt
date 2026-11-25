@@ -788,11 +788,13 @@ fun BottomSheetPlayer(
                             controlsContent(it)
                         }
 
-                        Spacer(Modifier.height(30.dp))
+                        TogetherReactionBar(playerConnection.service.together, TextBackgroundColor)
                     }
                 }
             }
         }
+
+        if (!state.isCollapsed) TogetherReactionLayer(playerConnection.service.together)
 
         val queueOnBackgroundColor =
             if (useBlackBackground) Color.White else MaterialTheme.colorScheme.onSurface

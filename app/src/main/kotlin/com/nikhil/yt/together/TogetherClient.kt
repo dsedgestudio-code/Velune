@@ -32,6 +32,7 @@ sealed interface TogetherClientEvent {
         val pong: com.nikhil.yt.together.HeartbeatPong,
         val receivedAtElapsedRealtimeMs: Long,
     ) : TogetherClientEvent
+    data class ReactionReceived(val reaction: Reaction) : TogetherClientEvent
     data object Disconnected : TogetherClientEvent
 }
 
@@ -55,7 +56,12 @@ class TogetherClient(
         private set
 
     /** False when no host answered on this network or online. */
-    suspend fun connect(secret: TogetherSecret, displayName: String): Boolean {
+    /** Joined in ghost mode (watching, not playing along). */
+    var watchOnly = false
+        private set
+
+    suspend fun connect(secret: TogetherSecret, displayName: String, watchOnly: Boolean = false): Boolean {
+        this.watchOnly = watchOnly
         val lan = nsd.find(secret.roomId)?.let { (host, port) ->
             runCatching { WebSocketConnection(http.webSocketSession("ws://$host:$port/together"), scope) }.getOrNull()
         }
@@ -70,6 +76,7 @@ class TogetherClient(
                     sessionKey = secret.lanKey,
                     clientId = clientId,
                     displayName = displayName.trim().ifBlank { "Guest" },
+                    watchOnly = watchOnly,
                 ),
             ),
         )
@@ -102,6 +109,12 @@ class TogetherClient(
         AddTrackRequest(sessionId = sid, participantId = pid, track = track, mode = mode)
     }
 
+    fun react(emoji: String) = sendAsParticipant { sid, pid -> Reaction(sessionId = sid, participantId = pid, name = "", emoji = emoji) }
+
+    fun suggest(track: TogetherTrack) = sendAsParticipant { sid, pid -> SuggestTrack(sessionId = sid, participantId = pid, track = track) }
+
+    fun vote(trackId: String) = sendAsParticipant { sid, pid -> VoteSuggestion(sessionId = sid, participantId = pid, trackId = trackId) }
+
     fun sendHeartbeat(pingId: Long, clientElapsedRealtimeMs: Long) {
         val sid = sessionId ?: return
         scope.launch { connection?.send(encode(HeartbeatPing(sessionId = sid, pingId = pingId, clientElapsedRealtimeMs = clientElapsedRealtimeMs))) }
@@ -124,6 +137,7 @@ class TogetherClient(
                         _events.emit(TogetherClientEvent.Welcome(message, overLan))
                     }
                     is RoomStateMessage -> _events.emit(TogetherClientEvent.RoomState(message.state))
+                    is Reaction -> _events.emit(TogetherClientEvent.ReactionReceived(message))
                     is com.nikhil.yt.together.JoinDecision ->
                         if (message.participantId == selfParticipantId) _events.emit(TogetherClientEvent.JoinDecision(message))
                     is KickParticipant ->

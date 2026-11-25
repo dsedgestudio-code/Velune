@@ -330,10 +330,29 @@ class MusicService :
     private var outputRouteWatcher: OutputRouteWatcher? = null
     private val immersiveProcessor = ImmersiveProcessor()
     private val overlapImmersiveProcessor = ImmersiveProcessor()
+    private val crossfeedProcessor = CrossfeedProcessor()
+    private val overlapCrossfeedProcessor = CrossfeedProcessor()
     var playerVolume = MutableStateFlow(1f)
     private val audioFocusVolumeFactor = MutableStateFlow(1f)
     private val playbackFadeFactor = MutableStateFlow(1f)
     private val resumeFadeFactor = MutableStateFlow(1f)
+    private val sleepFadeFactor = MutableStateFlow(1f)
+    private val longTrackResume by lazy { LongTrackResume(this) }
+    private var albumGain: Pair<String, Float>? = null
+
+    /**
+     * Within one album, songs share one gain (the lowest any of its tracks needed so far), so a quiet
+     * interlude stays quiet next to the loud single instead of being pushed up to the same level.
+     */
+    private fun albumAwareGain(albumId: String?, trackGain: Float): Float {
+        if (albumId.isNullOrBlank()) return trackGain.also { albumGain = null }
+        val gain = albumGain?.takeIf { it.first == albumId }?.second?.let { minOf(it, trackGain) } ?: trackGain
+        albumGain = albumId to gain
+        return gain
+    }
+    val skipHabits by lazy { SkipHabits(this) }
+    /** (songId, title) of a song you always skip, for the UI to offer hiding it. */
+    val hidePrompts = kotlinx.coroutines.flow.MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 1)
     private val skipMemory by lazy { RecentMemory(this, "adaptive_shuffle_skips", AdaptiveShuffle.SKIP_COOLDOWN_MS) }
     /** Songs that have actually been the current song since this shuffle started. */
     private val playedThisShuffle = java.util.Collections.synchronizedSet(mutableSetOf<String>())
@@ -478,9 +497,16 @@ class MusicService :
         super.onCreate()
         ensureScopesActive()
         together.start()
-        outputRouteWatcher = OutputRouteWatcher(this) { profile ->
+        val deviceMemory = DeviceAudioMemory(this, dataStore)
+        outputRouteWatcher = OutputRouteWatcher(this) { profile, device ->
             loudnessProcessor.outputProfile = profile
             overlapLoudnessProcessor.outputProfile = profile
+            crossfeedProcessor.headphones = profile != OutputProfile.SPEAKER
+            overlapCrossfeedProcessor.headphones = profile != OutputProfile.SPEAKER
+            scope.launch {
+                deviceMemory.onDeviceChanged(device)
+                dataStore.data.first()[PlayerVolumeKey]?.let { playerVolume.value = it }
+            }
         }.also { it.start() }
 
         try {
@@ -505,7 +531,7 @@ class MusicService :
             ExoPlayer
                 .Builder(this)
                 .setMediaSourceFactory(createMediaSourceFactory())
-                .setRenderersFactory(createRenderersFactory(immersiveProcessor, loudnessProcessor))
+                .setRenderersFactory(createRenderersFactory(immersiveProcessor, crossfeedProcessor, loudnessProcessor))
                 .setHandleAudioBecomingNoisy(true)
                 .setWakeMode(C.WAKE_MODE_NETWORK)
                 .setAudioAttributes(
@@ -521,7 +547,7 @@ class MusicService :
                 .build()
                 .apply {
                     addListener(this@MusicService)
-                    sleepTimer = SleepTimer(scope, this)
+                    sleepTimer = SleepTimer(scope, this, sleepFadeFactor)
                     addListener(sleepTimer)
                     addAnalyticsListener(PlaybackStatsListener(false, this@MusicService))
                 }
@@ -592,8 +618,8 @@ class MusicService :
             }
         }
 
-        combine(playerVolume, audioFocusVolumeFactor, playbackFadeFactor, resumeFadeFactor) { playerVolume, audioFocusVolumeFactor, playbackFadeFactor, resumeFadeFactor ->
-            playerVolume * audioFocusVolumeFactor * playbackFadeFactor * resumeFadeFactor
+        combine(playerVolume, audioFocusVolumeFactor, playbackFadeFactor, resumeFadeFactor, sleepFadeFactor) { playerVolume, audioFocusVolumeFactor, playbackFadeFactor, resumeFadeFactor, sleepFade ->
+            playerVolume * audioFocusVolumeFactor * playbackFadeFactor * resumeFadeFactor * sleepFade
         }.collectLatest(scope) { finalVolume ->
             player.volume = finalVolume
         }
@@ -610,6 +636,22 @@ class MusicService :
                 immersiveProcessor.enabled = it
                 overlapImmersiveProcessor.enabled = it
             }
+
+        dataStore.data
+            .map { it[com.nikhil.yt.constants.CrossfeedKey] ?: false }
+            .distinctUntilChanged()
+            .collectLatest(scope) {
+                crossfeedProcessor.enabled = it
+                overlapCrossfeedProcessor.enabled = it
+            }
+
+        scope.launch {
+            while (isActive) {
+                delay(10_000)
+                val item = player.currentMediaItem ?: continue
+                if (player.isPlaying && player.duration > 0) longTrackResume.save(item.mediaId, player.currentPosition, player.duration)
+            }
+        }
 
         playerVolume.debounce(1000).collect(ioScope) { volume ->
             dataStore.edit { settings ->
@@ -718,7 +760,7 @@ class MusicService :
                     ExoPlayer
                         .Builder(this)
                         .setMediaSourceFactory(createMediaSourceFactory())
-                        .setRenderersFactory(createRenderersFactory(overlapImmersiveProcessor, overlapLoudnessProcessor))
+                        .setRenderersFactory(createRenderersFactory(overlapImmersiveProcessor, overlapCrossfeedProcessor, overlapLoudnessProcessor))
                         .setHandleAudioBecomingNoisy(false)
                         .setWakeMode(C.WAKE_MODE_NETWORK)
                         .setAudioAttributes(
@@ -771,7 +813,7 @@ class MusicService :
                 if (normalizeAudio) {
                     val loudness = format?.loudnessDb ?: format?.perceptualLoudnessDb
                     if (loudness != null) {
-                        LoudnessProcessor.normalizationGainDb(loudness.toFloat())
+                        albumAwareGain(player.currentMetadata?.album?.id, LoudnessProcessor.normalizationGainDb(loudness.toFloat()))
                             .also { Timber.tag("AudioNormalization").i("Applying normalization gain: $it dB (loudness: $loudness)") }
                     } else {
                         Timber.tag("AudioNormalization").w("Normalization enabled but no loudness data available - no normalization applied")
@@ -952,7 +994,7 @@ class MusicService :
         scope.launch {
             if (!dataStore.get(EnableDiscordRPCKey, true)) {
                 if (DiscordPresenceManager.isRunning()) {
-                    Timber.tag("MusicService").d("Discord RPC disabled → stopping presence manager")
+                    Timber.tag("MusicService").d("Discord RPC disabled â†’ stopping presence manager")
                     try { DiscordPresenceManager.stop() } catch (_: Exception) {}
                     lastPresenceToken = null
                 }
@@ -962,7 +1004,7 @@ class MusicService :
             val key: String = dataStore.get(DiscordTokenKey, "")
             if (key.isNullOrBlank()) {
                 if (DiscordPresenceManager.isRunning()) {
-                    Timber.tag("MusicService").d("No Discord token → stopping presence manager")
+                    Timber.tag("MusicService").d("No Discord token â†’ stopping presence manager")
                     try { DiscordPresenceManager.stop() } catch (_: Exception) {}
                     lastPresenceToken = null
                 }
@@ -1990,6 +2032,16 @@ class MusicService :
 
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         mediaItem?.mediaId?.let(playedThisShuffle::add)
+        mediaItem?.mediaId?.let { id ->
+            // The queue reached a song you hid: pass over it (choosing it yourself still plays it).
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && skipHabits.isHidden(id) && player.hasNextMediaItem()) {
+                player.seekToNextMediaItem()
+                return
+            }
+            if (!together.isGuest && (reason != Player.MEDIA_ITEM_TRANSITION_REASON_AUTO || crossfadeDurationMs.value == 0)) {
+                longTrackResume.positionFor(id)?.let { player.seekTo(it) }
+            }
+        }
     super.onMediaItemTransition(mediaItem, reason)
 
     clearStreamRefreshGuards(
@@ -2230,7 +2282,7 @@ class MusicService :
                         )
                     }
                     if (!success) {
-                        Timber.tag("MusicService").w("immediate presence update returned false — attempting restart")
+                        Timber.tag("MusicService").w("immediate presence update returned false â€” attempting restart")
                         if (DiscordPresenceManager.isRunning()) {
                             try {
                                 if (DiscordPresenceManager.restart()) {
@@ -2323,7 +2375,7 @@ class MusicService :
                                 isPaused = !player.isPlaying,
                             )
                             if (!success) {
-                                Timber.tag("MusicService").w("transition immediate presence update failed — attempting restart")
+                                Timber.tag("MusicService").w("transition immediate presence update failed â€” attempting restart")
                                 try { DiscordPresenceManager.stop(); DiscordPresenceManager.start(this@MusicService, dataStore.get(DiscordTokenKey, ""), { song }, { player.currentPosition }, { !player.isPlaying }, { getPresenceIntervalMillis(this@MusicService) }) } catch (_: Exception) {}
                             }
                             try {
@@ -2387,7 +2439,7 @@ class MusicService :
                                 )
                             }
                             if (!success) {
-                                Timber.tag("MusicService").w("isPlaying/mediaTransition immediate presence update failed — restarting manager")
+                                Timber.tag("MusicService").w("isPlaying/mediaTransition immediate presence update failed â€” restarting manager")
                                 if (DiscordPresenceManager.isRunning()) {
                                     try { DiscordPresenceManager.stop(); DiscordPresenceManager.restart() } catch (_: Exception) {}
                                 }
@@ -2434,6 +2486,7 @@ class MusicService :
         // Taste learning: the song played to its end (same index again = repeat-one).
         if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) {
             heardMemory.record(skipped.mediaId)
+            skipHabits.recordListened(skipped.mediaId)
             taste.feedback(
                 skipped,
                 if (oldPosition.mediaItemIndex == newPosition.mediaItemIndex) TasteModel.REPEATED else TasteModel.FINISHED,
@@ -2461,9 +2514,13 @@ class MusicService :
                 if (oldPosition.positionMs < 15_000L) TasteModel.SKIPPED_INSTANTLY else TasteModel.SKIPPED_EARLY,
             )
             skipMemory.record(skipped.mediaId)
+            if (oldPosition.positionMs < 10_000L && skipHabits.recordInstantSkip(skipped.mediaId)) {
+                hidePrompts.tryEmit(skipped.mediaId to skipped.mediaMetadata.title?.toString().orEmpty())
+            }
             scope.launch(Dispatchers.IO + SilentHandler) { forYouEngine.recordSkip(skipped.mediaId) } // teaches For You
         } else {
             heardMemory.record(skipped.mediaId) // listened past halfway: counts as heard
+            skipHabits.recordListened(skipped.mediaId)
         }
     }
 
@@ -2529,7 +2586,7 @@ class MusicService :
         if (currentMediaId != null && YTPlayerUtils.isBotDetectionException(error)) {
             if (markAndCheckRecoveryAllowance(currentMediaId)) {
                 Timber.tag("MusicService").w(
-                    "Bot detection error for $currentMediaId — clearing caches and retrying with fresh stream"
+                    "Bot detection error for $currentMediaId â€” clearing caches and retrying with fresh stream"
                 )
                 YTPlayerUtils.invalidateCachedStreamUrls(currentMediaId)
                 playbackUrlCache.remove(currentMediaId)
@@ -2876,7 +2933,7 @@ class MusicService :
             .build()
     }
 
-    private fun createRenderersFactory(immersive: ImmersiveProcessor, loudness: LoudnessProcessor) =
+    private fun createRenderersFactory(immersive: ImmersiveProcessor, crossfeed: CrossfeedProcessor, loudness: LoudnessProcessor) =
         object : DefaultRenderersFactory(this) {
             override fun buildAudioSink(
                 context: Context,
@@ -2889,6 +2946,7 @@ class MusicService :
                 .setAudioProcessorChain(
                     DefaultAudioSink.DefaultAudioProcessorChain(
                         immersive, // tone + space first, so the limiter in `loudness` catches its peaks
+                        crossfeed,
                         loudness,
                         SilenceSkippingAudioProcessor(
                             1_500_000L,

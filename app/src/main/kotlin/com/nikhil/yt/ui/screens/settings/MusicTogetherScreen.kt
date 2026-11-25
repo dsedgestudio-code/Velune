@@ -110,7 +110,8 @@ fun MusicTogetherScreen(
     val (allowAdd, setAllowAdd) = rememberPreference(TogetherAllowGuestsToAddTracksKey, true)
     val (allowControl, setAllowControl) = rememberPreference(TogetherAllowGuestsToControlPlaybackKey, false)
     val (requireApproval, setRequireApproval) = rememberPreference(TogetherRequireHostApprovalToJoinKey, false)
-    val settings = TogetherRoomSettings(allowAdd, allowControl, requireApproval)
+    val (allowWatchers, setAllowWatchers) = rememberPreference(com.nikhil.yt.constants.TogetherAllowWatchersKey, true)
+    val settings = TogetherRoomSettings(allowAdd, allowControl, requireApproval, allowWatchers)
 
     Column(
         Modifier
@@ -146,6 +147,7 @@ fun MusicTogetherScreen(
             PreferenceGroupTitle(stringResource(R.string.together_session_rules))
             SwitchPreference(
                 title = { Text(stringResource(R.string.together_allow_guests_add)) },
+                description = stringResource(R.string.together_guests_suggest_desc),
                 checked = allowAdd,
                 onCheckedChange = { setAllowAdd(it); controller.updateSettings(settings.copy(allowGuestsToAddTracks = it)) },
             )
@@ -159,6 +161,12 @@ fun MusicTogetherScreen(
                 description = stringResource(R.string.together_ask_before_joining_desc),
                 checked = requireApproval,
                 onCheckedChange = { setRequireApproval(it); controller.updateSettings(settings.copy(requireHostApprovalToJoin = it)) },
+            )
+            SwitchPreference(
+                title = { Text(stringResource(R.string.together_allow_watchers)) },
+                description = stringResource(R.string.together_allow_watchers_desc),
+                checked = allowWatchers,
+                onCheckedChange = { setAllowWatchers(it); controller.updateSettings(settings.copy(allowWatchers = it)) },
             )
             Spacer(Modifier.height(24.dp))
         }
@@ -185,9 +193,10 @@ private fun StartSession(
     settings: TogetherRoomSettings,
 ) {
     var code by rememberSaveable { mutableStateOf("") }
+    var watchOnly by rememberSaveable { mutableStateOf(false) }
     val parsed = TogetherCode.parse(code)
     val scan = rememberLauncherForActivityResult(ScanContract()) { result ->
-        result.contents?.let { scanned -> TogetherCode.parse(scanned)?.let { controller.join(it, name) } }
+        result.contents?.let { scanned -> TogetherCode.parse(scanned)?.let { controller.join(it, name, watchOnly) } }
     }
 
     Column(Modifier.padding(horizontal = 20.dp)) {
@@ -227,7 +236,7 @@ private fun StartSession(
                 label = stringResource(R.string.together_code_label),
                 placeholder = "XXXX-XXXX",
                 capitalize = true,
-                onDone = { parsed?.let { controller.join(it, name) } },
+                onDone = { parsed?.let { controller.join(it, name, watchOnly) } },
                 modifier = Modifier.weight(1f),
                 trailing = {
                     IconButton(onClick = {
@@ -243,11 +252,17 @@ private fun StartSession(
                     }
                 },
             )
-            FilledTonalButton(onClick = { parsed?.let { controller.join(it, name) } }, enabled = parsed != null, modifier = Modifier.height(56.dp)) {
+            FilledTonalButton(onClick = { parsed?.let { controller.join(it, name, watchOnly) } }, enabled = parsed != null, modifier = Modifier.height(56.dp)) {
                 Text(stringResource(R.string.together_join_action))
             }
         }
     }
+    SwitchPreference(
+        title = { Text(stringResource(R.string.together_watch_only)) },
+        description = stringResource(R.string.together_watch_only_desc),
+        checked = watchOnly,
+        onCheckedChange = { watchOnly = it },
+    )
 
     if (people.isNotEmpty()) {
         PreferenceGroupTitle(stringResource(R.string.together_saved_people))
@@ -310,6 +325,8 @@ private fun Hosting(
         }
     }
 
+    hosting.roomState?.let { Suggestions(controller, it, selfId = null) }
+
     val participants = hosting.roomState?.participants.orEmpty()
     PreferenceGroupTitle(stringResource(R.string.together_listening_now, participants.size.coerceAtLeast(1)))
     participants.forEach { participant ->
@@ -351,7 +368,14 @@ private fun Joined(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
+    if (joined.watching && !joined.isPending) {
+        joined.roomState.queue.getOrNull(joined.roomState.currentIndex)?.let { track ->
+            Spacer(Modifier.height(20.dp))
+            TrackRow(track, subtitle = stringResource(R.string.together_watching_now))
+        }
+    }
     if (!joined.isPending) {
+        Suggestions(controller, joined.roomState, selfId = joined.selfParticipantId)
         PreferenceGroupTitle(stringResource(R.string.together_listening_now, joined.roomState.participants.size.coerceAtLeast(1)))
         joined.roomState.participants.forEach { participant ->
             ParticipantRow(participant, people, controller, isHostView = false, isSelf = participant.id == joined.selfParticipantId)
@@ -360,6 +384,64 @@ private fun Joined(
     Spacer(Modifier.height(8.dp))
     TextButton(onClick = controller::leave, modifier = Modifier.padding(horizontal = 8.dp)) {
         Text(stringResource(R.string.together_leave_session), color = MaterialTheme.colorScheme.error)
+    }
+}
+
+/** Songs waiting for the room's votes. Guests vote; the host plays one next or drops it. */
+@Composable
+private fun Suggestions(controller: TogetherController, room: com.nikhil.yt.together.TogetherRoomState, selfId: String?) {
+    if (room.suggestions.isEmpty()) return
+    val roomSize = room.participants.count { !it.isPending }.coerceAtLeast(1)
+    PreferenceGroupTitle(stringResource(R.string.together_suggestions))
+    room.suggestions.forEach { suggestion ->
+        val votes = stringResource(R.string.together_votes, suggestion.voterIds.size, roomSize)
+        TrackRow(suggestion.track, subtitle = stringResource(R.string.together_suggested_by, suggestion.byName) + " · " + votes) {
+            if (selfId == null) {
+                IconButton(onClick = { controller.decideSuggestion(suggestion.track.id, accept = false) }) {
+                    Icon(painterResource(R.drawable.close), stringResource(R.string.together_dismiss))
+                }
+                FilledTonalButton(onClick = { controller.decideSuggestion(suggestion.track.id, accept = true) }) {
+                    Text(stringResource(R.string.together_play_next))
+                }
+            } else {
+                val voted = selfId in suggestion.voterIds
+                FilledTonalButton(onClick = { controller.vote(suggestion.track.id) }, enabled = !voted) {
+                    Text(stringResource(if (voted) R.string.together_voted else R.string.together_vote))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrackRow(
+    track: com.nikhil.yt.together.TogetherTrack,
+    subtitle: String,
+    actions: @Composable () -> Unit = {},
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+    ) {
+        coil3.compose.AsyncImage(
+            model = track.thumbnailUrl,
+            contentDescription = null,
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+            modifier = Modifier.size(52.dp).clip(RoundedCornerShape(12.dp)),
+        )
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(track.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        actions()
     }
 }
 
@@ -388,6 +470,7 @@ private fun ParticipantRow(
                 participant.isHost -> stringResource(R.string.together_role_host)
                 participant.isPending -> stringResource(R.string.together_wants_in)
                 isSelf -> stringResource(R.string.together_you)
+                participant.watching -> stringResource(R.string.together_watching)
                 saved != null -> participant.name
                 else -> null
             }

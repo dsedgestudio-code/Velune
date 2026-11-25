@@ -110,6 +110,16 @@ constructor(
                             }
                     }
 
+                    VIBE_NIGHT, VIBE_MORNING, VIBE_REPEAT -> {
+                        val from = java.time.LocalDateTime.now().minusDays(VIBE_DAYS)
+                            .toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+                        when (playlist) {
+                            VIBE_NIGHT -> database.songsPlayedAtHours(from, NIGHT_HOURS)
+                            VIBE_MORNING -> database.songsPlayedAtHours(from, MORNING_HOURS)
+                            else -> database.songsOnRepeat(from)
+                        }.map { it.filterExplicit(hideExplicit) }
+                    }
+
                     else -> MutableStateFlow(emptyList())
                 }
             }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
@@ -133,5 +143,15 @@ constructor(
 
     fun syncLikedSongs() {
         refresh()
+    }
+
+    companion object {
+        const val VIBE_NIGHT = "vibe_night"
+        const val VIBE_MORNING = "vibe_morning"
+        const val VIBE_REPEAT = "vibe_repeat"
+        val VIBES = listOf(VIBE_NIGHT, VIBE_MORNING, VIBE_REPEAT)
+        private const val VIBE_DAYS = 60L
+        private val NIGHT_HOURS = listOf(22, 23, 0, 1, 2, 3, 4)
+        private val MORNING_HOURS = listOf(5, 6, 7, 8, 9, 10)
     }
 }

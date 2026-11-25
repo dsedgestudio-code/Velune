@@ -29,14 +29,40 @@ data class TogetherParticipant(
     val isConnected: Boolean = true,
     /** Stable per-install id; lets people save each other after listening together. */
     val clientId: String? = null,
+    /** Joined in ghost mode: watching, not playing along. */
+    val watching: Boolean = false,
 )
 
 @Serializable
 @Immutable
 data class TogetherRoomSettings(
+    /** Off: guests' songs become suggestions the room votes on, and the host has the final say. */
     val allowGuestsToAddTracks: Boolean = true,
     val allowGuestsToControlPlayback: Boolean = false,
     val requireHostApprovalToJoin: Boolean = false,
+    val allowWatchers: Boolean = true,
+)
+
+/** A song waiting for votes. Plays next once more than half the room has voted for it. */
+@Serializable
+@Immutable
+data class TogetherSuggestion(
+    val track: TogetherTrack,
+    val byName: String,
+    val voterIds: List<String> = emptyList(),
+)
+
+@Immutable
+data class TogetherReaction(val name: String, val emoji: String, val mine: Boolean = false)
+
+/** What a session was, shown when it ends. */
+@Immutable
+data class TogetherRecap(
+    val people: List<String>,
+    val tracks: List<TogetherTrack>,
+    val reactions: Int,
+    val topTrack: TogetherTrack?,
+    val minutes: Int,
 )
 
 @Serializable
@@ -54,6 +80,7 @@ data class TogetherRoomState(
     val repeatMode: Int = 0,
     val shuffleEnabled: Boolean = false,
     val sentAtElapsedRealtimeMs: Long = 0L,
+    val suggestions: List<TogetherSuggestion> = emptyList(),
 )
 
 @Immutable
@@ -89,6 +116,7 @@ sealed class TogetherSessionState {
         val hostClientId: String? = null,
         val overLan: Boolean = false,
         val isPending: Boolean = false,
+        val watching: Boolean = false,
     ) : TogetherSessionState()
 
     data class Error(val message: String) : TogetherSessionState()

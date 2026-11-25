@@ -50,8 +50,11 @@ enum class OutputProfile(val ceilingDb: Float, val highPassHz: Float) {
     }
 }
 
-/** Watches audio outputs coming and going and reports the profile to use. */
-class OutputRouteWatcher(context: Context, private val onChange: (OutputProfile) -> Unit) {
+/**
+ * Watches audio outputs coming and going and reports the profile to use, plus a stable key for the
+ * device itself ("speaker", or e.g. "bt:AirPods Pro") so settings can be remembered per device.
+ */
+class OutputRouteWatcher(context: Context, private val onChange: (OutputProfile, String) -> Unit) {
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private val callback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) = update()
@@ -66,7 +69,10 @@ class OutputRouteWatcher(context: Context, private val onChange: (OutputProfile)
     fun stop() = audioManager.unregisterAudioDeviceCallback(callback)
 
     private fun update() {
-        val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).map { it.type }
-        onChange(OutputProfile.from(outputs))
+        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val profile = OutputProfile.from(devices.map { it.type })
+        val device = devices.lastOrNull { OutputProfile.from(listOf(it.type)) == profile && profile != OutputProfile.SPEAKER }
+        val key = if (device == null) "speaker" else "${profile.name.lowercase()}:${device.productName}"
+        onChange(profile, key)
     }
 }

@@ -344,4 +344,56 @@
     <string name="together_ask_before_joining_desc">You let each person in yourself</string>
     <string name="lyrics_romanize_hindi">Show Hindi lyrics in Roman Urdu</string>
     <string name="lyrics_romanize_hindi_desc">Adds a Roman Urdu line under each Hindi line</string>
+    <string name="together_vote_passed">The room voted: %1$s plays next</string>
+    <string name="together_suggested">Suggested to the room</string>
+    <string name="together_suggestions">Suggestions</string>
+    <string name="together_vote">Vote</string>
+    <string name="together_voted">Voted</string>
+    <string name="together_votes">%1$d of %2$d votes</string>
+    <string name="together_play_next">Play next</string>
+    <string name="together_dismiss">Dismiss</string>
+    <string name="together_suggested_by">Suggested by %1$s</string>
+    <string name="together_watch_only">Just watch</string>
+    <string name="together_watch_only_desc">See what they\'re playing without your phone playing along</string>
+    <string name="together_allow_watchers">Let people just watch</string>
+    <string name="together_allow_watchers_desc">They see what\'s playing without listening along</string>
+    <string name="together_watching">Watching</string>
+    <string name="together_watching_now">You\'re watching. Your own music stays yours.</string>
+    <string name="together_react">React</string>
+    <string name="together_guests_suggest_desc">When off, guests suggest songs and the room votes</string>
+    <string name="together_recap_title">That was a session</string>
+    <string name="together_recap_with">With %1$s</string>
+    <string name="together_recap_stats">%1$d songs · %2$d min · %3$d reactions</string>
+    <string name="together_recap_top">Most loved moment</string>
+    <string name="together_recap_share">Share recap</string>
+    <string name="skip_hide_prompt">You always skip %1$s. Hide it from autoplay?</string>
+    <string name="skip_hide">Hide</string>
+    <string name="skip_hidden">Hidden. Autoplay will pass over it.</string>
+    <string name="hidden_songs">Hidden songs</string>
+    <string name="hidden_songs_desc">%1$d hidden from autoplay. Tap to bring them all back.</string>
+    <string name="crossfeed">Concert hall</string>
+    <string name="crossfeed_desc">On headphones, blends a little of each side into the other, like speakers in a room</string>
+    <string name="share_card">Share card</string>
+    <string name="done">Done</string>
+    <string name="whole_year">Whole year</string>
+    <string name="vibe_night">Late nights</string>
+    <string name="vibe_morning">Mornings</string>
+    <string name="vibe_repeat">On repeat</string>
+    <string name="mood_dial">Mood</string>
+    <string name="mood_new">New</string>
+    <string name="mood_familiar">Familiar</string>
+    <string name="mood_play">Play %1$s</string>
+    <string-array name="mood_ladder">
+        <item>Sleep</item>
+        <item>Relax</item>
+        <item>Chill</item>
+        <item>Focus</item>
+        <item>Romance</item>
+        <item>Feel good</item>
+        <item>Commute</item>
+        <item>Party</item>
+        <item>Energy</item>
+        <item>Workout</item>
+    </string-array>
+    <string name="your_period_in_music">Your %1$s in music</string>    <string name="scan_to_play">Scan to play in Spectra</string>
 </resources>

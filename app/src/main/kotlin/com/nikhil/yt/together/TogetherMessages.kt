@@ -24,6 +24,38 @@ data class ClientHello(
     val sessionKey: String,
     val clientId: String,
     val displayName: String,
+    /** Ghost mode: see what's playing without your phone playing along. */
+    val watchOnly: Boolean = false,
+) : TogetherMessage
+
+/** An emoji someone tapped, shown floating up on everyone's player. The host relays guests' reactions. */
+@Serializable
+@SerialName("reaction")
+@Immutable
+data class Reaction(
+    val sessionId: String,
+    val participantId: String,
+    val name: String,
+    val emoji: String,
+) : TogetherMessage
+
+/** A guest proposing a song when the host keeps the queue to themselves; the room votes on it. */
+@Serializable
+@SerialName("suggest_track")
+@Immutable
+data class SuggestTrack(
+    val sessionId: String,
+    val participantId: String,
+    val track: TogetherTrack,
+) : TogetherMessage
+
+@Serializable
+@SerialName("vote_suggestion")
+@Immutable
+data class VoteSuggestion(
+    val sessionId: String,
+    val participantId: String,
+    val trackId: String,
 ) : TogetherMessage
 
 @Serializable

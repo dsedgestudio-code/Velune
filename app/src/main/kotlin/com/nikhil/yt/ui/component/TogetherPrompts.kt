@@ -1,5 +1,12 @@
 package com.nikhil.yt.ui.component
 
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -54,4 +61,39 @@ fun TogetherPrompts(
             },
         )
     }
+
+    val recap by controller.recap.collectAsState()
+    recap?.let { RecapDialog(it, onDismiss = controller::dismissRecap) }
+}
+
+/** When a session ends: the card itself (the same image you'd share), then Share or Done. */
+@Composable
+private fun RecapDialog(recap: com.nikhil.yt.together.TogetherRecap, onDismiss: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val accent = (com.nikhil.yt.ui.player.ArtworkPalette.colors.firstOrNull()
+        ?: androidx.compose.material3.MaterialTheme.colorScheme.primary).toArgb()
+    val card by androidx.compose.runtime.produceState<android.graphics.Bitmap?>(null, recap) {
+        value = runCatching { com.nikhil.yt.utils.ShareCards.recap(context, recap, accent) }.getOrNull()
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        text = {
+            card?.let {
+                androidx.compose.foundation.Image(
+                    bitmap = it.asImageBitmap(),
+                    contentDescription = stringResource(R.string.together_recap_title),
+                    modifier = androidx.compose.ui.Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(4f / 5f)
+                        .clip(RoundedCornerShape(20.dp)),
+                )
+            } ?: Text(stringResource(R.string.together_recap_title))
+        },
+        confirmButton = {
+            TextButton(onClick = { card?.let { com.nikhil.yt.utils.ShareCards.share(context, it, "spectra_session") } }, enabled = card != null) {
+                Text(stringResource(R.string.together_recap_share))
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.done)) } },
+    )
 }

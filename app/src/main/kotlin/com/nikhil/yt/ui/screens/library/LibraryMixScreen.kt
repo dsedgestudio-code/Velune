@@ -167,6 +167,14 @@ fun LibraryMixScreen(
             songThumbnails = emptyList(),
         )
 
+    val vibePlaylists = listOf(
+        com.nikhil.yt.viewmodels.AutoPlaylistViewModel.VIBE_NIGHT to stringResource(R.string.vibe_night),
+        com.nikhil.yt.viewmodels.AutoPlaylistViewModel.VIBE_MORNING to stringResource(R.string.vibe_morning),
+        com.nikhil.yt.viewmodels.AutoPlaylistViewModel.VIBE_REPEAT to stringResource(R.string.vibe_repeat),
+    ).map { (id, name) ->
+        id to Playlist(playlist = PlaylistEntity(id = id, name = name), songCount = 0, songThumbnails = emptyList())
+    }
+
     val cachePlaylist =
         Playlist(
             playlist = PlaylistEntity(
@@ -488,6 +496,19 @@ fun LibraryMixScreen(
                                     .clickable {
                                         navController.navigate("top_playlist/$topSize")
                                     }
+                                    .animateItem(),
+                            )
+                        }
+                    }
+
+                    vibePlaylists.forEach { (id, vibe) ->
+                        item(key = id, contentType = { CONTENT_TYPE_PLAYLIST }) {
+                            PlaylistListItem(
+                                playlist = vibe,
+                                autoPlaylist = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { navController.navigate("auto_playlist/$id") }
                                     .animateItem(),
                             )
                         }
@@ -847,6 +868,20 @@ fun LibraryMixScreen(
                                             navController.navigate("top_playlist/$topSize")
                                         },
                                     )
+                                    .animateItem(),
+                            )
+                        }
+                    }
+
+                    vibePlaylists.forEach { (id, vibe) ->
+                        item(key = id, contentType = { CONTENT_TYPE_PLAYLIST }) {
+                            PlaylistGridItem(
+                                playlist = vibe,
+                                fillMaxWidth = true,
+                                autoPlaylist = true,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .combinedClickable(onClick = { navController.navigate("auto_playlist/$id") })
                                     .animateItem(),
                             )
                         }

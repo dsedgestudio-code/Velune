@@ -78,6 +78,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.material3.contentColorFor
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -1042,13 +1043,11 @@ class MainActivity : ComponentActivity() {
                                                 title = {
                                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                                         // Tinted, not an Image: the white mark must follow the theme.
-                                                        Icon(
-                                                            painter = painterResource(id = R.drawable.ic_spectra_ghost),
-                                                            contentDescription = null,
+                                                        val ghostPlaying = playerConnection?.isPlaying?.collectAsState()?.value == true
+                                                        com.nikhil.yt.ui.component.LiveGhost(
+                                                            isPlaying = ghostPlaying,
                                                             tint = MaterialTheme.colorScheme.onSurface,
-                                                            modifier = Modifier
-                                                                .padding(end = 10.dp)
-                                                                .size(30.dp)
+                                                            modifier = Modifier.padding(end = 10.dp),
                                                         )
 
                                                         Text(
@@ -1458,6 +1457,7 @@ class MainActivity : ComponentActivity() {
                                 displayName = togetherName.ifBlank { Build.MODEL ?: getString(R.string.app_name) },
                                 onLinkHandled = { togetherLinkCode = null },
                             )
+                            com.nikhil.yt.ui.component.SkipHidePrompt(connection.service)
                         }
 
                         sharedSong?.let { song ->

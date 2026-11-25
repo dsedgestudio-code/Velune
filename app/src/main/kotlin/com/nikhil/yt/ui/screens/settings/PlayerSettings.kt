@@ -32,6 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
@@ -115,6 +116,9 @@ fun PlayerSettings(
         ImmersiveAudioKey,
         defaultValue = false
     )
+    val (crossfeed, onCrossfeedChange) = rememberPreference(com.nikhil.yt.constants.CrossfeedKey, defaultValue = false)
+    val skipHabits = com.nikhil.yt.LocalPlayerConnection.current?.service?.skipHabits
+    var hiddenCount by remember { mutableIntStateOf(skipHabits?.hiddenCount() ?: 0) }
     val (audioOffload, onAudioOffloadChange) = rememberPreference(
         AudioOffload,
         defaultValue = false
@@ -336,6 +340,26 @@ fun PlayerSettings(
         )
 
         SwitchPreference(
+            title = { Text(stringResource(R.string.crossfeed)) },
+            description = stringResource(R.string.crossfeed_desc),
+            icon = { Icon(painterResource(R.drawable.graphic_eq), null) },
+            checked = crossfeed,
+            onCheckedChange = { enabled ->
+                onCrossfeedChange(enabled)
+                if (enabled) onAudioOffloadChange(false)
+            }
+        )
+
+        if (hiddenCount > 0) {
+            PreferenceEntry(
+                title = { Text(stringResource(R.string.hidden_songs)) },
+                description = stringResource(R.string.hidden_songs_desc, hiddenCount),
+                icon = { Icon(painterResource(R.drawable.skip_next), null) },
+                onClick = { skipHabits?.unhideAll(); hiddenCount = 0 },
+            )
+        }
+
+        SwitchPreference(
             title = { Text(stringResource(R.string.audio_offload)) },
             description = stringResource(R.string.audio_offload_desc),
             icon = { Icon(painterResource(R.drawable.speed), null) },
@@ -344,6 +368,7 @@ fun PlayerSettings(
                 onAudioOffloadChange(enabled)
                 if (enabled) {
                     onImmersiveAudioChange(false)
+                    onCrossfeedChange(false)
                     onSkipSilenceChange(false)
                 }
             }

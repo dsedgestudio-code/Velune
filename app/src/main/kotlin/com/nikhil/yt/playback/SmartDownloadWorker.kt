@@ -24,7 +24,7 @@ import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.flow.first
 import java.util.concurrent.TimeUnit
 
-/** Smart offline mix: on Wi-Fi + charging, keeps your top predicted songs downloaded. */
+/** Smart offline mix: once a week on Wi-Fi + charging, refreshes a small set picked from your monthly Wrapped. */
 class SmartDownloadWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     @EntryPoint
     @InstallIn(SingletonComponent::class)
@@ -42,7 +42,7 @@ class SmartDownloadWorker(context: Context, params: WorkerParameters) : Coroutin
     }.getOrElse { Result.retry() }
 
     companion object {
-        const val DEFAULT_LIMIT = 30
+        const val DEFAULT_LIMIT = 10
         private const val WORK_NAME = "smart_downloads"
 
         fun schedule(context: Context, enabled: Boolean) {
@@ -51,14 +51,14 @@ class SmartDownloadWorker(context: Context, params: WorkerParameters) : Coroutin
                 wm.cancelUniqueWork(WORK_NAME)
                 return
             }
-            val request = PeriodicWorkRequestBuilder<SmartDownloadWorker>(12, TimeUnit.HOURS)
+            val request = PeriodicWorkRequestBuilder<SmartDownloadWorker>(7, TimeUnit.DAYS)
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.UNMETERED)
                         .setRequiresCharging(true)
                         .build(),
                 ).build()
-            wm.enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, request)
+            wm.enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.UPDATE, request)
         }
     }
 }

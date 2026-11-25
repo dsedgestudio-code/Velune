@@ -443,7 +443,7 @@
     <string name="immersive_audio">Immersive sound</string>
     <string name="download_wifi_only">Download on Wi-Fi only</string>
     <string name="smart_downloads">Smart downloads</string>
-    <string name="smart_downloads_desc">On Wi-Fi while charging, keep the %1$d songs you\'re most likely to love downloaded</string>
+    <string name="smart_downloads_desc">Once a week, on Wi-Fi while charging, downloads %1$d songs picked from your Wrapped: your top artists this month and what you\'re most likely to love</string>
     <string name="smart_downloads_limit">Smart downloads size</string>
     <string name="upgrade_downloads">Upgrade to best quality</string>
     <string name="upgrade_downloads_desc">%1$d downloads were saved in lower quality</string>

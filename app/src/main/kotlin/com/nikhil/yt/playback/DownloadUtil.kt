@@ -6,6 +6,7 @@
 
 package com.nikhil.yt.playback
 
+import kotlinx.coroutines.flow.first
 import android.content.Context
 import android.media.MediaCodecList
 import android.net.ConnectivityManager
@@ -317,8 +318,15 @@ constructor(
         val ours = smartPrefs.getStringSet(SMART_IDS_KEY, emptySet()).orEmpty()
         val candidates = database.songsWithInterest().filter { !it.song.isLocal }
         val byId = candidates.associateBy { it.id }
+        // Your Wrapped: the artists you've played most in the last 30 days lift their songs to the top.
+        val now = System.currentTimeMillis()
+        val wrappedArtists = database.mostPlayedArtists(now - 30L * 24 * 60 * 60 * 1000, limit = 10, toTimeStamp = now)
+            .first().map { it.id }.toSet()
         val target = candidates
-            .map { it to taste.model.score(it.id, it.artists.map { a -> a.id }) }
+            .map { song ->
+                val artistIds = song.artists.map { a -> a.id }
+                song to taste.model.score(song.id, artistIds) + if (artistIds.any(wrappedArtists::contains)) WRAPPED_BOOST else 0.0
+            }
             .filter { it.second > SMART_MIN_SCORE }
             .sortedByDescending { it.second }
             .take(limit)
@@ -438,5 +446,6 @@ constructor(
         private val BEST_AUDIO_ITAGS = setOf(251, 141, 774)
         private const val SMART_IDS_KEY = "ids"
         private const val SMART_MIN_SCORE = 0.65
+        private const val WRAPPED_BOOST = 0.1
     }
 }

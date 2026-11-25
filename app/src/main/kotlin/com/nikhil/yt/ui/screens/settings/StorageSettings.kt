@@ -636,7 +636,7 @@ private fun DownloadCareSection() {
             ListPreference(
                 title = { Text(stringResource(R.string.smart_downloads_limit)) },
                 selectedValue = smartLimit,
-                values = listOf(15, 30, 50, 100),
+                values = listOf(10, 20, 30, 50),
                 valueText = { "$it" },
                 onValueSelected = onSmartLimitChange,
             )

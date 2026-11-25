@@ -36,7 +36,10 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -69,6 +72,14 @@ class TogetherController(
     /** An invite waiting for the user's answer. */
     val invite: StateFlow<TogetherInvite?> = _invite.asStateFlow()
 
+    private val _reactions = MutableSharedFlow<TogetherReaction>(extraBufferCapacity = 16)
+    /** Emoji reactions to float up on the player, from anyone in the session (including you). */
+    val reactions: SharedFlow<TogetherReaction> = _reactions.asSharedFlow()
+
+    private val _recap = MutableStateFlow<TogetherRecap?>(null)
+    /** The session that just ended, for the recap card. */
+    val recap: StateFlow<TogetherRecap?> = _recap.asStateFlow()
+
     private val nsd = TogetherNsd(context)
     private var clientId: String = ""
     private var inbox: TogetherInbox? = null
@@ -77,6 +88,41 @@ class TogetherController(
     private var server: TogetherServer? = null
     private var relayHost: RelayHost? = null
     private var broadcastJob: Job? = null
+    private var hostDisplayName = ""
+    @Volatile private var suggestionList: List<TogetherSuggestion> = emptyList()
+    private var log: SessionLog? = null
+
+    /** What happened in this session, for the recap. */
+    private class SessionLog {
+        val startedAt = SystemClock.elapsedRealtime()
+        val people = LinkedHashSet<String>()
+        val tracks = LinkedHashMap<String, TogetherTrack>()
+        val reactionsByTrack = HashMap<String, Int>()
+        var reactions = 0
+        var currentTrackId: String? = null
+
+        fun saw(state: TogetherRoomState, selfId: String) {
+            state.participants.filter { !it.isPending && it.id != selfId }.forEach { people += it.name }
+            val track = state.queue.getOrNull(state.currentIndex) ?: return
+            currentTrackId = track.id
+            if (state.isPlaying) tracks.putIfAbsent(track.id, track)
+        }
+
+        fun reacted() {
+            reactions++
+            currentTrackId?.let { reactionsByTrack[it] = (reactionsByTrack[it] ?: 0) + 1 }
+        }
+
+        fun recap(): TogetherRecap? = tracks.takeIf { it.isNotEmpty() }?.let {
+            TogetherRecap(
+                people = people.toList(),
+                tracks = it.values.toList(),
+                reactions = reactions,
+                topTrack = reactionsByTrack.maxByOrNull { e -> e.value }?.key?.let(it::get),
+                minutes = ((SystemClock.elapsedRealtime() - startedAt) / 60_000L).toInt(),
+            )
+        }
+    }
 
     // Guest side
     private var client: TogetherClient? = null
@@ -104,8 +150,9 @@ class TogetherController(
         val expiresAt: Long,
     )
 
+    /** A guest whose player follows the host. A watcher (ghost mode) is not: their player stays their own. */
     val isGuest: Boolean
-        get() = (_state.value as? TogetherSessionState.Joined)?.role is TogetherRole.Guest
+        get() = (_state.value as? TogetherSessionState.Joined)?.let { it.role is TogetherRole.Guest && !it.watching } == true
 
     /** True while a host state is being applied, so the player's own callbacks aren't echoed back. */
     val isApplyingRemote: Boolean get() = applyingRemote
@@ -153,6 +200,9 @@ class TogetherController(
             }
             server = room
             relayHost = relay
+            hostDisplayName = hostName
+            suggestionList = emptyList()
+            log = SessionLog()
             _state.value = TogetherSessionState.Hosting(code, secret.roomId, lan = port != null, online = online, settings = settings, roomState = null)
             broadcastJob = ioScope.launch { broadcastLoop(room, secret.roomId) }
             then?.invoke(code)
@@ -176,6 +226,7 @@ class TogetherController(
             val signature = listOf(
                 state.queueHash, state.currentIndex, state.isPlaying, state.repeatMode, state.shuffleEnabled,
                 participants.joinToString { "${it.id}:${it.isPending}" }, settings,
+                state.suggestions.joinToString { "${it.track.id}:${it.voterIds.size}" },
             ).joinToString("|")
             val expectedPosition = lastSentPosition + if (lastSentPlaying) now - lastSentAt else 0L
             val jumped = abs(state.positionMs - expectedPosition) > 1_500
@@ -186,6 +237,7 @@ class TogetherController(
                 lastSentPosition = state.positionMs
                 lastSentPlaying = state.isPlaying
             }
+            log?.saw(state.copy(participants = participants), HOST_ID)
             (_state.value as? TogetherSessionState.Hosting)?.takeIf { it.sessionId == sessionId }?.let { hosting ->
                 _state.value = hosting.copy(settings = settings, roomState = state.copy(participants = participants, settings = settings))
             }
@@ -217,8 +269,17 @@ class TogetherController(
         when (event) {
             is TogetherServerEvent.ControlRequested ->
                 if (room.currentSettings().allowGuestsToControlPlayback) applyHostControl(event.request.action)
+            is TogetherServerEvent.ReactionReceived -> receivedReaction(TogetherReaction(event.reaction.name, event.reaction.emoji))
+            is TogetherServerEvent.SuggestionReceived ->
+                addVote(event.suggestion.track, event.byName, event.suggestion.participantId, room)
+            is TogetherServerEvent.VoteReceived ->
+                suggestionList.firstOrNull { it.track.id == event.vote.trackId }?.let { addVote(it.track, it.byName, event.vote.participantId, room) }
             is TogetherServerEvent.AddTrackRequested ->
-                if (room.currentSettings().allowGuestsToAddTracks) {
+                if (!room.currentSettings().allowGuestsToAddTracks) {
+                    // Older guests just send the song: treat it as a suggestion.
+                    val name = room.currentParticipants().firstOrNull { it.id == event.request.participantId }?.name.orEmpty()
+                    addVote(event.request.track, name, event.request.participantId, room)
+                } else {
                     val item = event.request.track.toMediaMetadata().toMediaItem()
                     withContext(Dispatchers.Main) {
                         when (event.request.mode) {
@@ -272,13 +333,63 @@ class TogetherController(
             repeatMode = player.repeatMode,
             shuffleEnabled = player.shuffleModeEnabled,
             sentAtElapsedRealtimeMs = SystemClock.elapsedRealtime(),
+            suggestions = suggestionList,
         )
+    }
+
+    // ---- Reactions and suggestions ----
+
+    fun react(emoji: String) {
+        val room = server
+        val joined = _state.value as? TogetherSessionState.Joined
+        when {
+            room != null -> ioScope.launch { room.broadcast(Reaction(room.sessionId, HOST_ID, hostDisplayName, emoji)) }
+            joined != null && !joined.isPending -> client?.react(emoji)
+            else -> return
+        }
+        receivedReaction(TogetherReaction(context.getString(R.string.together_you), emoji, mine = true))
+    }
+
+    private fun receivedReaction(reaction: TogetherReaction) {
+        log?.reacted()
+        _reactions.tryEmit(reaction)
+    }
+
+    /** Votes for a suggested song (the host's vote counts like anyone's). */
+    fun vote(trackId: String) {
+        val room = server
+        if (room != null) {
+            suggestionList.firstOrNull { it.track.id == trackId }?.let { ioScope.launch { addVote(it.track, it.byName, HOST_ID, room) } }
+        } else {
+            client?.vote(trackId)
+        }
+    }
+
+    /** Host only: play a suggestion next now, or drop it. */
+    fun decideSuggestion(trackId: String, accept: Boolean) {
+        val suggestion = suggestionList.firstOrNull { it.track.id == trackId } ?: return
+        suggestionList = suggestionList - suggestion
+        if (accept) mainScope.launch { playNext(listOf(suggestion.track.toMediaMetadata().toMediaItem())) }
+    }
+
+    private suspend fun addVote(track: TogetherTrack, byName: String, voterId: String, room: TogetherServer) {
+        val existing = suggestionList.firstOrNull { it.track.id == track.id }
+        val updated = existing?.copy(voterIds = (existing.voterIds + voterId).distinct())
+            ?: TogetherSuggestion(track, byName, listOf(voterId))
+        val roomSize = room.currentParticipants().count { !it.isPending }.coerceAtLeast(1)
+        if (updated.voterIds.size * 2 > roomSize) {
+            suggestionList = suggestionList.filterNot { it.track.id == track.id }
+            withContext(Dispatchers.Main) { playNext(listOf(track.toMediaMetadata().toMediaItem())) }
+            notice(context.getString(R.string.together_vote_passed, track.title))
+        } else {
+            suggestionList = if (existing == null) suggestionList + updated else suggestionList.map { if (it === existing) updated else it }
+        }
     }
 
     // ---- Joining ----
 
     /** Joins with a code, a pasted link or a scanned QR. There is no auto-reconnect: a new session needs a new join. */
-    fun join(raw: String, displayName: String) {
+    fun join(raw: String, displayName: String, watchOnly: Boolean = false) {
         val code = TogetherCode.parse(raw)
         if (code == null) {
             _state.value = TogetherSessionState.Error(context.getString(R.string.invalid_code))
@@ -294,7 +405,7 @@ class TogetherController(
             clock = TogetherClock()
             clientEventsJob = ioScope.launch { guest.events.collect { onClientEvent(it, secret.roomId) } }
 
-            if (!guest.connect(secret, name)) {
+            if (!guest.connect(secret, name, watchOnly)) {
                 fail(context.getString(R.string.together_no_connection))
                 return@launch
             }
@@ -318,10 +429,13 @@ class TogetherController(
                     hostClientId = event.welcome.hostClientId,
                     overLan = event.overLan,
                     isPending = event.welcome.isPending,
+                    watching = client?.watchOnly == true,
                 )
+                log = SessionLog()
                 startHeartbeat()
             }
             is TogetherClientEvent.RoomState -> applyRemoteRoomState(event.state)
+            is TogetherClientEvent.ReactionReceived -> receivedReaction(TogetherReaction(event.reaction.name, event.reaction.emoji))
             is TogetherClientEvent.JoinDecision ->
                 if (event.decision.approved) {
                     (_state.value as? TogetherSessionState.Joined)?.let { _state.value = it.copy(isPending = false) }
@@ -355,6 +469,11 @@ class TogetherController(
     private suspend fun applyRemoteRoomState(state: TogetherRoomState) {
         val pid = selfParticipantId ?: return
         val now = SystemClock.elapsedRealtime()
+        log?.saw(state, pid)
+        (_state.value as? TogetherSessionState.Joined)?.takeIf { it.watching }?.let { watcher ->
+            _state.value = watcher.copy(roomState = state) // ghost mode: follow along on screen only
+            return
+        }
 
         // While our own request is in flight, don't let an older host state undo it on screen.
         pendingControl?.let { pending ->
@@ -444,11 +563,12 @@ class TogetherController(
 
     fun requestAddTracks(items: List<MediaItem>, mode: AddTrackMode) {
         val joined = _state.value as? TogetherSessionState.Joined ?: return
+        val tracks = items.mapNotNull { it.metadata?.toTrack() }
         if (!joined.roomState.settings.allowGuestsToAddTracks) {
-            notice(context.getString(R.string.not_allowed), key = "add-disabled")
+            tracks.forEach { client?.suggest(it) }
+            notice(context.getString(R.string.together_suggested), key = "suggested")
             return
         }
-        val tracks = items.mapNotNull { it.metadata?.toTrack() }
         // Play-next inserts one after another right after the current song, so send them last-first.
         (if (mode == AddTrackMode.PLAY_NEXT) tracks.asReversed() else tracks).forEach { client?.requestAddTrack(it, mode) }
     }
@@ -506,7 +626,14 @@ class TogetherController(
         stopInternal()
     }
 
+    fun dismissRecap() {
+        _recap.value = null
+    }
+
     private suspend fun stopInternal() {
+        log?.recap()?.let { _recap.value = it }
+        log = null
+        suggestionList = emptyList()
         broadcastJob?.cancel(); broadcastJob = null
         clientEventsJob?.cancel(); clientEventsJob = null
         heartbeatJob?.cancel(); heartbeatJob = null

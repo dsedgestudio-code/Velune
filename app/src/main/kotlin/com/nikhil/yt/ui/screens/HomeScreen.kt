@@ -350,6 +350,23 @@ fun HomeScreen(
                 }
             }
 
+            item(key = "mood_dial") {
+                val (energy, setEnergy) = rememberPreference(com.nikhil.yt.constants.MoodEnergyKey, 0.4f)
+                val (familiarity, setFamiliarity) = rememberPreference(com.nikhil.yt.constants.MoodFamiliarityKey, 0.5f)
+                com.nikhil.yt.ui.component.MoodDial(
+                    energy = energy,
+                    familiarity = familiarity,
+                    onEnergyChange = setEnergy,
+                    onFamiliarityChange = setFamiliarity,
+                    onPlay = {
+                        playerConnection.playQueue(
+                            com.nikhil.yt.playback.queues.MoodMixQueue(viewModel.database, energy, familiarity),
+                        )
+                    },
+                    modifier = Modifier.padding(vertical = 12.dp).animateItem(),
+                )
+            }
+
             keepListening?.takeIf { it.isNotEmpty() }?.let { items ->
                 item {
                     NavigationTitle(

@@ -390,6 +390,39 @@ interface DatabaseDao {
     )
     fun quickPicks(now: Long = System.currentTimeMillis()): Flow<List<Song>>
 
+    /**
+     * Vibe lists: songs you keep coming back to at certain hours (event timestamps hold local wall-clock
+     * time, so the hour here is the hour on your phone).
+     */
+    @Transaction
+    @SuppressWarnings(RoomWarnings.QUERY_MISMATCH)
+    @Query(
+        """
+        SELECT song.* FROM song
+        JOIN (SELECT songId, COUNT(*) AS n FROM event
+              WHERE timestamp > :fromTimeStamp
+                AND CAST(strftime('%H', timestamp / 1000, 'unixepoch') AS INTEGER) IN (:hours)
+              GROUP BY songId HAVING n >= :minPlays) AS e ON song.id = e.songId
+        ORDER BY e.n DESC LIMIT :limit
+        """,
+    )
+    fun songsPlayedAtHours(fromTimeStamp: Long, hours: List<Int>, minPlays: Int = 3, limit: Int = 50): Flow<List<Song>>
+
+    /** "On repeat": songs played [minPlays]+ times in a single day lately. */
+    @Transaction
+    @SuppressWarnings(RoomWarnings.QUERY_MISMATCH)
+    @Query(
+        """
+        SELECT song.* FROM song
+        JOIN (SELECT songId, MAX(n) AS best FROM
+                (SELECT songId, date(timestamp / 1000, 'unixepoch') AS day, COUNT(*) AS n
+                 FROM event WHERE timestamp > :fromTimeStamp GROUP BY songId, day)
+              GROUP BY songId HAVING best >= :minPlays) AS e ON song.id = e.songId
+        ORDER BY e.best DESC LIMIT :limit
+        """,
+    )
+    fun songsOnRepeat(fromTimeStamp: Long, minPlays: Int = 3, limit: Int = 50): Flow<List<Song>>
+
     @Transaction
     @Query(
         """

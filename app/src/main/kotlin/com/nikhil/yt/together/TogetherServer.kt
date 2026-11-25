@@ -26,6 +26,9 @@ sealed interface TogetherServerEvent {
     data class ParticipantLeft(val participantId: String, val reason: String?) : TogetherServerEvent
     data class ControlRequested(val request: ControlRequest) : TogetherServerEvent
     data class AddTrackRequested(val request: AddTrackRequest) : TogetherServerEvent
+    data class ReactionReceived(val reaction: Reaction) : TogetherServerEvent
+    data class SuggestionReceived(val suggestion: SuggestTrack, val byName: String) : TogetherServerEvent
+    data class VoteReceived(val vote: VoteSuggestion) : TogetherServerEvent
 }
 
 /**
@@ -54,6 +57,7 @@ class TogetherServer(
         val name: String,
         val connection: TogetherConnection,
         @Volatile var pending: Boolean,
+        val watching: Boolean = false,
     )
 
     private val guests = ConcurrentHashMap<String, Guest>()
@@ -140,6 +144,7 @@ class TogetherServer(
             hello.protocolVersion != TogetherProtocolVersion -> "Update Spectra to join this session"
             hello.sessionId != sessionId || hello.sessionKey != sessionKey -> "Invalid session"
             hello.clientId in bannedClientIds -> "You can't join this session"
+            hello.watchOnly && !mutex.withLock { settings.allowWatchers } -> "This host doesn't allow watching"
             else -> null
         }
         if (refusal != null) {
@@ -159,6 +164,7 @@ class TogetherServer(
             name = hello.displayName.trim().ifBlank { "Guest" }.take(40),
             connection = connection,
             pending = currentSettings.requireHostApprovalToJoin,
+            watching = hello.watchOnly,
         )
         guests[guest.participantId] = guest
         connection.send(
@@ -196,6 +202,13 @@ class TogetherServer(
                     )
                     is ControlRequest -> if (!guest.pending) onEvent?.invoke(TogetherServerEvent.ControlRequested(message.copy(participantId = guest.participantId)))
                     is AddTrackRequest -> if (!guest.pending) onEvent?.invoke(TogetherServerEvent.AddTrackRequested(message.copy(participantId = guest.participantId)))
+                    is Reaction -> if (!guest.pending) {
+                        val named = message.copy(participantId = guest.participantId, name = guest.name, emoji = message.emoji.take(8))
+                        broadcast(named, except = guest.participantId)
+                        onEvent?.invoke(TogetherServerEvent.ReactionReceived(named))
+                    }
+                    is SuggestTrack -> if (!guest.pending) onEvent?.invoke(TogetherServerEvent.SuggestionReceived(message.copy(participantId = guest.participantId), guest.name))
+                    is VoteSuggestion -> if (!guest.pending) onEvent?.invoke(TogetherServerEvent.VoteReceived(message.copy(participantId = guest.participantId)))
                     is ClientLeave -> break
                     else -> Unit
                 }
@@ -206,6 +219,12 @@ class TogetherServer(
             }
             runCatching { connection.close("Left") }
         }
+    }
+
+    /** Sends to everyone admitted to the room (not those still waiting for approval). */
+    suspend fun broadcast(message: TogetherMessage, except: String? = null) {
+        val text = encode(message)
+        guests.values.filter { !it.pending && it.participantId != except }.forEach { runCatching { it.connection.send(text) } }
     }
 
     private suspend fun remove(guest: Guest, reason: String) {
@@ -220,6 +239,7 @@ class TogetherServer(
         isHost = false,
         isPending = pending,
         clientId = clientId,
+        watching = watching,
     )
 
     private fun encode(message: TogetherMessage): String =

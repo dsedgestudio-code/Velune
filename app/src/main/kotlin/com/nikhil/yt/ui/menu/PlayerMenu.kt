@@ -129,6 +129,7 @@ import com.nikhil.yt.ui.component.TextFieldDialog
 import com.nikhil.yt.utils.rememberPreference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import androidx.compose.ui.graphics.toArgb
 import kotlin.math.abs
 import kotlin.math.log2
 import kotlin.math.pow
@@ -469,6 +470,40 @@ fun PlayerMenu(
                             clipboard.setPrimaryClip(clip)
                             android.widget.Toast.makeText(context, R.string.link_copied, android.widget.Toast.LENGTH_SHORT).show()
                             onDismiss()
+                        }
+                    ),
+                    NewAction(
+                        icon = {
+                            Icon(
+                                painter = painterResource(R.drawable.share),
+                                contentDescription = null,
+                                modifier = Modifier.size(28.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        text = stringResource(R.string.share_card),
+                        onClick = {
+                            val accent = (com.nikhil.yt.ui.player.ArtworkPalette.colors.firstOrNull()
+                                ?: androidx.compose.ui.graphics.Color(0xFF3A3F55)).toArgb()
+                            val shape = com.nikhil.yt.playback.WaveformStore.current.value
+                                ?.takeIf { it.first == mediaMetadata.id }?.second
+                            val appContext = context.applicationContext
+                            onDismiss()
+                            // App-wide scope: the menu (and its scope) is gone as soon as it closes.
+                            kotlinx.coroutines.MainScope().launch {
+                                runCatching {
+                                    val card = com.nikhil.yt.utils.ShareCards.nowPlaying(
+                                        appContext,
+                                        songId = mediaMetadata.id,
+                                        title = mediaMetadata.title,
+                                        artist = mediaMetadata.artists.joinToString(", ") { it.name },
+                                        coverUrl = mediaMetadata.thumbnailUrl,
+                                        accent = accent,
+                                        waveform = shape,
+                                    )
+                                    com.nikhil.yt.utils.ShareCards.share(appContext, card, "spectra_${mediaMetadata.id}")
+                                }
+                            }
                         }
                     ),
                     NewAction(

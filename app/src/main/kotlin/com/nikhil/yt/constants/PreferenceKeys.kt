@@ -70,6 +70,7 @@ val TogetherClientIdKey = stringPreferencesKey("together_client_id")
 val TogetherAllowGuestsToAddTracksKey = booleanPreferencesKey("together_allow_guests_add_tracks")
 val TogetherAllowGuestsToControlPlaybackKey = booleanPreferencesKey("together_allow_guests_control_playback")
 val TogetherRequireHostApprovalToJoinKey = booleanPreferencesKey("together_require_host_approval_to_join")
+val TogetherAllowWatchersKey = booleanPreferencesKey("together_allow_watchers")
     
 // ListenBrainz scrobbling
 val ListenBrainzEnabledKey = booleanPreferencesKey("listenbrainz_enabled")
@@ -111,6 +112,9 @@ val PermanentShuffleKey = booleanPreferencesKey("permanentShuffle")
 val SkipSilenceKey = booleanPreferencesKey("skipSilence")
 val AudioNormalizationKey = booleanPreferencesKey("audioNormalization")
 val ImmersiveAudioKey = booleanPreferencesKey("immersiveAudio")
+val CrossfeedKey = booleanPreferencesKey("crossfeed")
+val MoodEnergyKey = floatPreferencesKey("moodEnergy")
+val MoodFamiliarityKey = floatPreferencesKey("moodFamiliarity")
 val AudioOffload = booleanPreferencesKey("audioOffload")
 val AudioCrossfadeDurationKey = intPreferencesKey("audioCrossfadeDuration")
 val AutoLoadMoreKey = booleanPreferencesKey("autoLoadMore")
@@ -480,43 +484,43 @@ val LanguageCodeToName =
     mapOf(
         "en" to "English (US)",
         "en-GB" to "English (UK)",
-        "ja" to "日本語",
-        "ko" to "한국어",
-        "vi" to "Tiếng Việt",
-        "zh" to "中文",
-        "zh-CN" to "简体中文",
-        "zh-TW" to "繁體中文",
-        "fr" to "Français",
+        "ja" to "Ã¦â€”Â¥Ã¦Å“Â¬Ã¨ÂªÅ¾",
+        "ko" to "Ã­â€¢Å“ÃªÂµÂ­Ã¬â€“Â´",
+        "vi" to "TiÃ¡ÂºÂ¿ng ViÃ¡Â»â€¡t",
+        "zh" to "Ã¤Â¸Â­Ã¦â€“â€¡",
+        "zh-CN" to "Ã§Â®â‚¬Ã¤Â½â€œÃ¤Â¸Â­Ã¦â€“â€¡",
+        "zh-TW" to "Ã§Â¹ÂÃ©Â«â€Ã¤Â¸Â­Ã¦â€“â€¡",
+        "fr" to "FranÃƒÂ§ais",
         "de" to "Deutsch",
-        "es" to "Español",
-        "pt" to "Português",
-        "pt-BR" to "Português (Brasil)",
-        "ru" to "Русский",
+        "es" to "EspaÃƒÂ±ol",
+        "pt" to "PortuguÃƒÂªs",
+        "pt-BR" to "PortuguÃƒÂªs (Brasil)",
+        "ru" to "ÃÂ Ã‘Æ’Ã‘ÂÃ‘ÂÃÂºÃÂ¸ÃÂ¹",
         "it" to "Italiano",
         "nl" to "Nederlands",
         "pl" to "Polski",
-        "tr" to "Türkçe",
-        "ar" to "العربية",
-        "hi" to "हिन्दी",
-        "th" to "ไทย",
+        "tr" to "TÃƒÂ¼rkÃƒÂ§e",
+        "ar" to "Ã˜Â§Ã™â€žÃ˜Â¹Ã˜Â±Ã˜Â¨Ã™Å Ã˜Â©",
+        "hi" to "Ã Â¤Â¹Ã Â¤Â¿Ã Â¤Â¨Ã Â¥ÂÃ Â¤Â¦Ã Â¥â‚¬",
+        "th" to "Ã Â¹â€žÃ Â¸â€”Ã Â¸Â¢",
         "id" to "Bahasa Indonesia",
         "ms" to "Bahasa Melayu",
-        "uk" to "Українська",
-        "cs" to "Čeština",
-        "el" to "Ελληνικά",
-        "he" to "עברית",
+        "uk" to "ÃÂ£ÃÂºÃ‘â‚¬ÃÂ°Ã‘â€”ÃÂ½Ã‘ÂÃ‘Å’ÃÂºÃÂ°",
+        "cs" to "Ã„Å’eÃ…Â¡tina",
+        "el" to "ÃŽâ€¢ÃŽÂ»ÃŽÂ»ÃŽÂ·ÃŽÂ½ÃŽÂ¹ÃŽÂºÃŽÂ¬",
+        "he" to "Ã—Â¢Ã—â€˜Ã—Â¨Ã—â„¢Ã—Âª",
         "hu" to "Magyar",
-        "ro" to "Română",
+        "ro" to "RomÃƒÂ¢nÃ„Æ’",
         "fi" to "Suomi",
         "da" to "Dansk",
         "no" to "Norsk",
         "sv" to "Svenska",
-        "sk" to "Slovenčina",
-        "bg" to "Български",
+        "sk" to "SlovenÃ„Âina",
+        "bg" to "Ãâ€˜Ã‘Å ÃÂ»ÃÂ³ÃÂ°Ã‘â‚¬Ã‘ÂÃÂºÃÂ¸",
         "hr" to "Hrvatski",
-        "sr" to "Срpsки",
-        "lt" to "Lietuvių",
-        "lv" to "Latviešu",
+        "sr" to "ÃÂ¡Ã‘â‚¬psÃÂºÃÂ¸",
+        "lt" to "LietuviÃ…Â³",
+        "lv" to "LatvieÃ…Â¡u",
         "et" to "Eesti",
     )
 

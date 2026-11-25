@@ -17,6 +17,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -36,6 +37,9 @@ constructor(
 
     val selectedYear = MutableStateFlow(LocalDateTime.now().year)
 
+    /** null = the whole year; 1..12 = just that month (monthly Wrapped). */
+    val selectedMonth = MutableStateFlow<Int?>(null)
+
     val firstEvent = database
         .firstEvent()
         .stateIn(viewModelScope, SharingStarted.Lazily, null)
@@ -46,52 +50,28 @@ constructor(
         (currentYear downTo startYear).toList()
     }.stateIn(viewModelScope, SharingStarted.Lazily, listOf(LocalDateTime.now().year))
 
-    private fun getYearStartTimestamp(year: Int): Long {
-        return LocalDateTime.of(year, 1, 1, 0, 0, 0)
-            .toInstant(ZoneOffset.UTC)
-            .toEpochMilli()
+    /** [from, to] in epoch ms for the chosen year or month. */
+    private val range = combine(selectedYear, selectedMonth) { year, month ->
+        periodRange(year, month)
     }
 
-    private fun getYearEndTimestamp(year: Int): Long {
-        return LocalDateTime.of(year, 12, 31, 23, 59, 59)
-            .toInstant(ZoneOffset.UTC)
-            .toEpochMilli()
-    }
-
-    val topSongsStats = selectedYear.flatMapLatest { year ->
-        database.mostPlayedSongsStats(
-            fromTimeStamp = getYearStartTimestamp(year),
-            limit = 5,
-            toTimeStamp = getYearEndTimestamp(year)
-        )
+    val topSongsStats = range.flatMapLatest { (from, to) ->
+        database.mostPlayedSongsStats(fromTimeStamp = from, limit = 5, toTimeStamp = to)
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    val topSongs = selectedYear.flatMapLatest { year ->
-        database.mostPlayedSongs(
-            fromTimeStamp = getYearStartTimestamp(year),
-            limit = 5,
-            toTimeStamp = getYearEndTimestamp(year)
-        )
+    val topSongs = range.flatMapLatest { (from, to) ->
+        database.mostPlayedSongs(fromTimeStamp = from, limit = 5, toTimeStamp = to)
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    val topArtists = selectedYear.flatMapLatest { year ->
-        database.mostPlayedArtists(
-            fromTimeStamp = getYearStartTimestamp(year),
-            limit = 5,
-            toTimeStamp = getYearEndTimestamp(year)
-        ).map { artists ->
+    val topArtists = range.flatMapLatest { (from, to) ->
+        database.mostPlayedArtists(fromTimeStamp = from, limit = 5, toTimeStamp = to).map { artists ->
             artists.filter { it.artist.isYouTubeArtist }
         }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    val topAlbums = selectedYear.flatMapLatest { year ->
-        database.mostPlayedAlbums(
-            fromTimeStamp = getYearStartTimestamp(year),
-            limit = 5,
-            toTimeStamp = getYearEndTimestamp(year)
-        )
+    val topAlbums = range.flatMapLatest { (from, to) ->
+        database.mostPlayedAlbums(fromTimeStamp = from, limit = 5, toTimeStamp = to)
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
-
     val totalListeningTime = topSongsStats.map { songs ->
         songs.sumOf { stat -> stat.timeListened ?: 0L }
     }.stateIn(viewModelScope, SharingStarted.Lazily, 0L)
@@ -143,4 +123,11 @@ constructor(
             }
         }
     }
+}
+
+/** Start and end (epoch ms, UTC like the rest of the stats) of a year, or of one month in it. */
+fun periodRange(year: Int, month: Int?): Pair<Long, Long> {
+    val start = LocalDateTime.of(year, month ?: 1, 1, 0, 0)
+    val end = if (month == null) start.plusYears(1) else start.plusMonths(1)
+    return start.toInstant(ZoneOffset.UTC).toEpochMilli() to end.toInstant(ZoneOffset.UTC).toEpochMilli() - 1
 }
