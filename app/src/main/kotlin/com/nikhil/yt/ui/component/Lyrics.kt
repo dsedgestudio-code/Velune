@@ -60,11 +60,8 @@ import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DividerDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.LocalTextStyle
@@ -92,12 +89,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
-import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.ClipOp
-import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -105,7 +97,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -114,13 +105,9 @@ import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.unit.TextUnit
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.text.PlaceholderVerticalAlign
-import androidx.compose.foundation.text.InlineTextContent
 import kotlin.math.sin
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -130,8 +117,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
@@ -155,6 +140,8 @@ import com.nikhil.yt.constants.DarkModeKey
 import com.nikhil.yt.constants.LyricsClickKey
 import com.nikhil.yt.constants.LyricsRomanizeJapaneseKey
 import com.nikhil.yt.constants.LyricsRomanizeKoreanKey
+import com.nikhil.yt.constants.LyricsRomanizeHindiKey
+import com.nikhil.yt.lyrics.HindiRomanizer
 import com.nikhil.yt.constants.LyricsScrollKey
 import com.nikhil.yt.constants.LyricsTextPositionKey
 import com.nikhil.yt.constants.LyricsAnimationStyle
@@ -177,10 +164,8 @@ import com.nikhil.yt.lyrics.LyricsUtils.romanizeJapanese
 import com.nikhil.yt.lyrics.LyricsUtils.romanizeKorean
 import com.nikhil.yt.ui.component.shimmer.ShimmerHost
 import com.nikhil.yt.ui.component.shimmer.TextPlaceholder
-import com.nikhil.yt.ui.menu.LyricsMenu
 import com.nikhil.yt.ui.screens.settings.DarkMode
 import com.nikhil.yt.ui.screens.settings.LyricsPosition
-import com.nikhil.yt.ui.utils.fadingEdge
 import com.nikhil.yt.ui.utils.smoothFadingEdge
 import com.nikhil.yt.utils.ComposeToImage
 import com.nikhil.yt.utils.rememberEnumPreference
@@ -190,9 +175,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.pow
 import kotlin.math.abs
-import kotlin.math.exp
 import kotlin.time.Duration.Companion.seconds
 
 
@@ -447,7 +430,7 @@ fun Lyrics(
     val lyricsLineSpacing by rememberPreference(LyricsLineSpacingKey, 1.3f)
     val useSystemFont by rememberPreference(UseSystemFontKey, false)
     val lyricsFontFamily = remember(useSystemFont) {
-        if (useSystemFont) null else FontFamily(Font(R.font.sfprodisplaybold))
+        if (useSystemFont) null else FontFamily(Font(R.font.poppins_bold))
     }
 
     val verticalLineSpacing = with(LocalDensity.current) {
@@ -457,6 +440,7 @@ fun Lyrics(
     val scrollLyrics by rememberPreference(LyricsScrollKey, true)
     val romanizeJapaneseLyrics by rememberPreference(LyricsRomanizeJapaneseKey, true)
     val romanizeKoreanLyrics by rememberPreference(LyricsRomanizeKoreanKey, true)
+    val romanizeHindiLyrics by rememberPreference(LyricsRomanizeHindiKey, true)
     val scope = rememberCoroutineScope()
 
     val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
@@ -474,6 +458,21 @@ fun Lyrics(
         if (darkTheme == DarkMode.AUTO) isSystemInDarkTheme else darkTheme == DarkMode.ON
     }
 
+    /** Adds a Latin-script reading under lines in Japanese, Korean or Hindi, as the user chose. */
+    fun romanizeInto(entry: LyricsEntry, text: String) {
+        scope.launch {
+            runCatching {
+                when {
+                    romanizeJapaneseLyrics && isJapanese(text) && !isChinese(text) -> romanizeJapanese(text)
+                    romanizeKoreanLyrics && isKorean(text) -> romanizeKorean(text)
+                    romanizeHindiLyrics && HindiRomanizer.isDevanagari(text) -> HindiRomanizer.romanize(text)
+                    else -> null
+                }
+            }.onSuccess { romanized -> romanized?.let { entry.romanizedTextFlow.value = it } }
+                .onFailure { com.nikhil.yt.utils.reportException(it) }
+        }
+    }
+
     val lines = remember(lyrics, scope, mediaMetadata?.id, mediaMetadata?.duration) {
         if (lyrics == null || lyrics == LYRICS_NOT_FOUND) {
             emptyList()
@@ -481,28 +480,7 @@ fun Lyrics(
             val parsedLines = parseLyrics(lyrics)
             parsedLines.map { entry ->
                 val newEntry = LyricsEntry(entry.time, entry.text, entry.words)
-                if (romanizeJapaneseLyrics) {
-                    if (isJapanese(entry.text) && !isChinese(entry.text)) {
-                        scope.launch {
-                            try {
-                                newEntry.romanizedTextFlow.value = romanizeJapanese(entry.text)
-                            } catch (e: Exception) {
-                                com.nikhil.yt.utils.reportException(e)
-                            }
-                        }
-                    }
-                }
-                if (romanizeKoreanLyrics) {
-                    if (isKorean(entry.text)) {
-                        scope.launch {
-                            try {
-                                newEntry.romanizedTextFlow.value = romanizeKorean(entry.text)
-                            } catch (e: Exception) {
-                                com.nikhil.yt.utils.reportException(e)
-                            }
-                        }
-                    }
-                }
+                romanizeInto(newEntry, entry.text)
                 newEntry
             }.let {
                 listOf(LyricsEntry.HEAD_LYRICS_ENTRY) + it
@@ -511,28 +489,7 @@ fun Lyrics(
             val parsedLines = parseTtml(lyrics, mediaMetadata?.duration)
             parsedLines.map { entry ->
                 val newEntry = LyricsEntry(entry.time, entry.text, entry.words)
-                if (romanizeJapaneseLyrics) {
-                    if (isJapanese(entry.text) && !isChinese(entry.text)) {
-                        scope.launch {
-                            try {
-                                newEntry.romanizedTextFlow.value = romanizeJapanese(entry.text)
-                            } catch (e: Exception) {
-                                com.nikhil.yt.utils.reportException(e)
-                            }
-                        }
-                    }
-                }
-                if (romanizeKoreanLyrics) {
-                    if (isKorean(entry.text)) {
-                        scope.launch {
-                            try {
-                                newEntry.romanizedTextFlow.value = romanizeKorean(entry.text)
-                            } catch (e: Exception) {
-                                com.nikhil.yt.utils.reportException(e)
-                            }
-                        }
-                    }
-                }
+                romanizeInto(newEntry, entry.text)
                 newEntry
             }.let {
                 listOf(LyricsEntry.HEAD_LYRICS_ENTRY) + it
@@ -540,28 +497,7 @@ fun Lyrics(
         } else {
             lyrics.lines().mapIndexed { index, line ->
                 val newEntry = LyricsEntry(index * 100L, line)
-                if (romanizeJapaneseLyrics) {
-                    if (isJapanese(line) && !isChinese(line)) {
-                        scope.launch {
-                            try {
-                                newEntry.romanizedTextFlow.value = romanizeJapanese(line)
-                            } catch (e: Exception) {
-                                com.nikhil.yt.utils.reportException(e)
-                            }
-                        }
-                    }
-                }
-                if (romanizeKoreanLyrics) {
-                    if (isKorean(line)) {
-                        scope.launch {
-                            try {
-                                newEntry.romanizedTextFlow.value = romanizeKorean(line)
-                            } catch (e: Exception) {
-                                com.nikhil.yt.utils.reportException(e)
-                            }
-                        }
-                    }
-                }
+                romanizeInto(newEntry, line)
                 newEntry
             }
         }
@@ -1064,7 +1000,7 @@ fun Lyrics(
 
                         val hasWordTimings = remember(item.words) { item.words?.isNotEmpty() == true }
                         val romanizedText: String? =
-                            if (romanizeJapaneseLyrics || romanizeKoreanLyrics) {
+                            if (romanizeJapaneseLyrics || romanizeKoreanLyrics || romanizeHindiLyrics) {
                                 val value by item.romanizedTextFlow.collectAsState()
                                 value
                             } else {
@@ -1891,7 +1827,7 @@ fun Lyrics(
                                 modifier = Modifier
                             )
                         }
-                        if (romanizeJapaneseLyrics || romanizeKoreanLyrics) {
+                        if (romanizeJapaneseLyrics || romanizeKoreanLyrics || romanizeHindiLyrics) {
 
                             val romanizedFontSize = 16.sp
                             romanizedText?.let { romanized ->

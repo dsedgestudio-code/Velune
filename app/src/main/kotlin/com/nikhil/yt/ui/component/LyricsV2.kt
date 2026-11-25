@@ -150,9 +150,10 @@ fun LyricsV2(
     val (lyricsLineSpacing) = rememberPreference(LyricsLineSpacingKey, defaultValue = 1.3f)
     val (romanizeJapanese) = rememberPreference(LyricsRomanizeJapaneseKey, defaultValue = true)
     val (romanizeKorean) = rememberPreference(LyricsRomanizeKoreanKey, defaultValue = true)
+    val (romanizeHindi) = rememberPreference(com.nikhil.yt.constants.LyricsRomanizeHindiKey, defaultValue = true)
     val (useSystemFont) = rememberPreference(UseSystemFontKey, defaultValue = false)
     val lyricsFontFamily = remember(useSystemFont) {
-        if (useSystemFont) null else FontFamily(Font(R.font.sfprodisplaybold))
+        if (useSystemFont) null else FontFamily(Font(R.font.poppins_bold))
     }
     val playerBackground by rememberEnumPreference(PlayerBackgroundStyleKey, PlayerBackgroundStyle.DEFAULT)
 
@@ -276,14 +277,16 @@ fun LyricsV2(
     }
 
     // ── Romanization ──
-    LaunchedEffect(entriesWithWords, romanizeJapanese, romanizeKorean) {
-        if (!romanizeJapanese && !romanizeKorean) return@LaunchedEffect
+    LaunchedEffect(entriesWithWords, romanizeJapanese, romanizeKorean, romanizeHindi) {
+        if (!romanizeJapanese && !romanizeKorean && !romanizeHindi) return@LaunchedEffect
         entriesWithWords.forEach { entry ->
             if (entry.text.isBlank() || entry.romanizedTextFlow.value != null) return@forEach
             scope.launch(Dispatchers.Default) {
                 val romanized = when {
                     romanizeJapanese && isJapanese(entry.text) -> romanizeJapanese(entry.text)
                     romanizeKorean && isKorean(entry.text) -> romanizeKorean(entry.text)
+                    romanizeHindi && com.nikhil.yt.lyrics.HindiRomanizer.isDevanagari(entry.text) ->
+                        com.nikhil.yt.lyrics.HindiRomanizer.romanize(entry.text)
                     else -> null
                 }
                 if (romanized != null) entry.romanizedTextFlow.value = romanized

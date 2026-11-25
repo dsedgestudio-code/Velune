@@ -63,6 +63,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
@@ -156,7 +157,7 @@ fun LyricsScreen(
     val playerVolume = playerConnection.service.playerVolume.collectAsState()
     
     // slider style preference
-    val sliderStyle by rememberEnumPreference(SliderStyleKey, SliderStyle.Standard)
+    val sliderStyle by rememberEnumPreference(SliderStyleKey, SliderStyle.Waveform)
     val currentLyrics by playerConnection.currentLyrics.collectAsState(initial = null)
     val (useLyricsV2) = rememberPreference(UseLyricsV2Key, defaultValue = false)
 
@@ -206,6 +207,7 @@ fun LyricsScreen(
 
     var gradientColors by remember { mutableStateOf<List<Color>>(emptyList()) }
     val gradientColorsCache = remember { mutableMapOf<String, List<Color>>() }
+    SideEffect { ArtworkPalette.colors = gradientColors }
 
     val defaultGradientColors = listOf(MaterialTheme.colorScheme.surface, MaterialTheme.colorScheme.surfaceVariant)
     val fallbackColor = MaterialTheme.colorScheme.surface.toArgb()

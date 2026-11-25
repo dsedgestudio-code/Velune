@@ -27,6 +27,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.async
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.Dispatchers
 import javax.inject.Inject
 
@@ -52,12 +55,6 @@ constructor(
     suspend fun getLyrics(mediaMetadata: MediaMetadata, preferredProviderOnly: Boolean = false): String {
         currentLyricsJob?.cancel()
 
-        val cached = cache.get(mediaMetadata.id)?.firstOrNull()
-        if (cached != null) {
-            GlobalLog.append(Log.DEBUG, "LyricsHelper", "Found lyrics in cache for ${mediaMetadata.title}")
-            return cached.lyrics
-        }
-        
         GlobalLog.append(Log.DEBUG, "LyricsHelper", "Fetching lyrics for ${mediaMetadata.title} (Artist: ${mediaMetadata.artists.joinToString { it.name }}, Album: ${mediaMetadata.album?.title})")
 
         val isNetworkAvailable = try {
@@ -73,38 +70,36 @@ constructor(
 
         val ordered = orderedProviders()
         val providers = if (preferredProviderOnly) listOf(ordered.first()) else ordered
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        val deferred = scope.async {
-            for (provider in providers) {
-                val enabled = provider.isEnabled(context)
-                
-                if (enabled) {
-                    try {
-                        val result = provider.getLyrics(
-                            mediaMetadata.id,
-                            mediaMetadata.title,
-                            mediaMetadata.artists.joinToString { it.name },
-                            mediaMetadata.album?.title,
-                            mediaMetadata.duration,
-                        )
-                        result.onSuccess { lyrics ->
-                            if (isMeaningfulLyrics(lyrics)) {
-                                return@async lyrics
-                            }
-                        }.onFailure {
-                            reportException(it)
-                        }
-                    } catch (e: Exception) {
-                        reportException(e)
+        // Providers keep their priority order, but the next ones are already fetching while the current one
+        // answers, and none may stall the rest: a slow first provider used to delay lyrics by its full timeout.
+        val enabled = providers.filter { it.isEnabled(context) }
+        return coroutineScope {
+            val results = enabled.map { provider ->
+                async(Dispatchers.IO, start = CoroutineStart.LAZY) {
+                    withTimeoutOrNull(PROVIDER_TIMEOUT_MS) {
+                        runCatching {
+                            provider.getLyrics(
+                                mediaMetadata.id,
+                                mediaMetadata.title,
+                                mediaMetadata.artists.joinToString { it.name },
+                                mediaMetadata.album?.title,
+                                mediaMetadata.duration,
+                            )
+                        }.getOrElse { Result.failure(it) }
                     }
                 }
             }
-            return@async LYRICS_NOT_FOUND
+            try {
+                for ((index, result) in results.withIndex()) {
+                    results.subList(index, minOf(index + 1 + PROVIDER_LOOKAHEAD, results.size)).forEach { it.start() }
+                    val lyrics = result.await()?.onFailure { reportException(it) }?.getOrNull()
+                    if (lyrics != null && isMeaningfulLyrics(lyrics)) return@coroutineScope lyrics
+                }
+                LYRICS_NOT_FOUND
+            } finally {
+                results.forEach { it.cancel() }
+            }
         }
-
-        val lyrics = deferred.await()
-        scope.cancel()
-        return lyrics
     }
 
     suspend fun getAllLyrics(
@@ -201,6 +196,8 @@ constructor(
 
     companion object {
         private const val MAX_CACHE_SIZE = 3
+        private const val PROVIDER_TIMEOUT_MS = 6_000L
+        private const val PROVIDER_LOOKAHEAD = 1
         private val TIMESTAMP_REGEX = Regex("""\[[0-9]{1,2}:[0-9]{2}(?:\.[0-9]{1,3})?]""")
         private val INVISIBLE_CHARS_REGEX = Regex("""[\u200B\u200C\u200D\u2060\u00AD]""")
     }

@@ -152,7 +152,7 @@ fun LyricsImageCard(
     val density = LocalDensity.current
     val (useSystemFont) = rememberPreference(UseSystemFontKey, defaultValue = false)
     val lyricsFontFamily = remember(useSystemFont) {
-        if (useSystemFont) null else FontFamily(Font(R.font.sfprodisplaybold))
+        if (useSystemFont) null else FontFamily(Font(R.font.poppins_bold))
     }
 
     val cardSizeDp = 340.dp
@@ -384,7 +384,7 @@ fun LyricsImageCard(
                             contentAlignment = Alignment.Center
                         ) {
                             Image(
-                                painter = painterResource(id = R.drawable.ic_velune_concept),
+                                painter = painterResource(id = R.drawable.ic_spectra_ghost),
                                 contentDescription = null,
                                 modifier = Modifier.size(15.dp),
                                 colorFilter = ColorFilter.tint(

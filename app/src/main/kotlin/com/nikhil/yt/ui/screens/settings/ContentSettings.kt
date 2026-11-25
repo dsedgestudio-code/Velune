@@ -82,6 +82,7 @@ fun ContentSettings(
         )
     val (lyricsRomanizeJapanese, onLyricsRomanizeJapaneseChange) = rememberPreference(LyricsRomanizeJapaneseKey, defaultValue = true)
     val (lyricsRomanizeKorean, onLyricsRomanizeKoreanChange) = rememberPreference(LyricsRomanizeKoreanKey, defaultValue = true)
+    val (lyricsRomanizeHindi, onLyricsRomanizeHindiChange) = rememberPreference(com.nikhil.yt.constants.LyricsRomanizeHindiKey, defaultValue = true)
     val (preloadQueueLyricsEnabled, onPreloadQueueLyricsEnabledChange) = rememberPreference(PreloadQueueLyricsEnabledKey, defaultValue = true)
     val (queueLyricsPreloadCount, onQueueLyricsPreloadCountChange) = rememberPreference(QueueLyricsPreloadCountKey, defaultValue = 1)
     val (lengthTop, onLengthTopChange) = rememberPreference(key = TopSize, defaultValue = "50")
@@ -279,6 +280,14 @@ fun ContentSettings(
             icon = { Icon(painterResource(R.drawable.lyrics), null) },
             checked = lyricsRomanizeKorean,
             onCheckedChange = onLyricsRomanizeKoreanChange,
+        )
+
+        SwitchPreference(
+            title = { Text(stringResource(R.string.lyrics_romanize_hindi)) },
+            description = stringResource(R.string.lyrics_romanize_hindi_desc),
+            icon = { Icon(painterResource(R.drawable.lyrics), null) },
+            checked = lyricsRomanizeHindi,
+            onCheckedChange = onLyricsRomanizeHindiChange,
         )
         // Queue lyrics pre-load settings
         SwitchPreference(
