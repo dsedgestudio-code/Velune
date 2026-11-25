@@ -565,7 +565,7 @@ class MusicService :
                 .build()
                 .apply {
                     addListener(this@MusicService)
-                    sleepTimer = SleepTimer(scope, this, sleepFadeFactor)
+                    sleepTimer = SleepTimer(scope, this, sleepFadeFactor) { together.holdLocally() }
                     addListener(sleepTimer)
                     addAnalyticsListener(PlaybackStatsListener(false, this@MusicService))
                 }
@@ -1119,6 +1119,7 @@ class MusicService :
                 wasPlayingBeforeAudioFocusLoss = false
 
                 if (player.isPlaying) {
+                    together.holdLocally()
                     player.pause()
                 }
 
@@ -1133,6 +1134,7 @@ class MusicService :
                 wasPlayingBeforeAudioFocusLoss = player.isPlaying
 
                 if (player.isPlaying) {
+                    together.holdLocally()
                     player.pause()
                 }
 
@@ -1322,11 +1324,13 @@ class MusicService :
             return
         }
 
+        together.holdLocally()
         player.pause()
         consecutivePlaybackErr = 0
     }
 
     private fun stopOnError() {
+        together.holdLocally()
         player.pause()
     }
 
@@ -2068,7 +2072,7 @@ class MusicService :
         mediaItem?.mediaId?.let(playedThisShuffle::add)
         mediaItem?.mediaId?.let { id ->
             // The queue reached a song you hid: pass over it (choosing it yourself still plays it).
-            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && skipHabits.isHidden(id) && player.hasNextMediaItem()) {
+            if (!together.isGuest && reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && skipHabits.isHidden(id) && player.hasNextMediaItem()) {
                 player.seekToNextMediaItem()
                 return
             }
@@ -2349,6 +2353,11 @@ class MusicService :
     }
 }
 
+
+    override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+        // Headphones unplugged: runs before onEvents forwards the pause, so it stays on this phone.
+        if (reason == Player.PLAY_WHEN_READY_CHANGE_REASON_AUDIO_BECOMING_NOISY) together.holdLocally()
+    }
 
     override fun onEvents(player: Player, events: Player.Events) {
     if (events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED) && this.player.playWhenReady) {

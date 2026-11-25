@@ -274,13 +274,13 @@ class LoudnessProcessor : BaseAudioProcessor() {
     companion object {
         /**
          * YouTube's loudnessDb is relative to its reference level (positive = louder than reference).
-         * We aim [TARGET_OFFSET_DB] above that reference (about -9 LUFS, where most modern masters already sit),
-         * so typical songs play close to as mastered instead of being turned down; only the outliers move.
+         * We aim [TARGET_OFFSET_DB] above that reference (about -7 LUFS, as loud as most modern
+         * masters), so typical songs play as mastered instead of being turned down; only the hottest outliers come down.
          * Upward gain is capped at +6 dB so quiet, dynamic recordings aren't squashed.
          */
         fun normalizationGainDb(loudnessDb: Float): Float = (TARGET_OFFSET_DB - loudnessDb).coerceIn(-15f, 6f)
 
-        const val TARGET_OFFSET_DB = 5f
+        const val TARGET_OFFSET_DB = 7f
 
         /** -1 dBFS, the Bluetooth ceiling: room for codec overshoot when AAC (AirPods) or SBC re-encodes. */
         const val CEILING = 0.8912509f

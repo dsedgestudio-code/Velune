@@ -84,7 +84,7 @@ class LoudnessProcessorTest {
 
     @Test
     fun normalizationGainIsClamped() {
-        assertEquals(-3f, LoudnessProcessor.normalizationGainDb(8f), 0f) // aims 5 dB above YouTube's reference
+        assertEquals(-1f, LoudnessProcessor.normalizationGainDb(8f), 0f) // aims 7 dB above YouTube's reference
         assertEquals(6f, LoudnessProcessor.normalizationGainDb(-20f), 0f)
         assertEquals(-15f, LoudnessProcessor.normalizationGainDb(30f), 0f)
     }

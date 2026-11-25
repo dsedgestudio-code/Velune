@@ -138,6 +138,10 @@ class TogetherController(
     private var lastSentAction: ControlAction? = null
     private var lastSentActionAt = 0L
     private var pendingControl: PendingControl? = null
+    /** The phone paused itself (call, headphones out, sleep timer): stay paused here, don't pause the room. */
+    @Volatile private var localHold = false
+    private class Received(val state: TogetherRoomState, val at: Long, val travel: Long)
+    private var lastReceived: Received? = null
 
     private var lastNoticeKey: String? = null
     private var lastNoticeAt = 0L
@@ -490,12 +494,28 @@ class TogetherController(
 
         val sentAt = state.sentAtElapsedRealtimeMs
         if (sentAt in 1..lastAppliedSentAt) return
+        lastAppliedSentAt = sentAt
 
         // Host clock -> our clock, then add the time the message spent travelling.
         val offset = clock?.snapshot()?.estimatedOffsetMs ?: 0L
         val travelled = (now - (sentAt - offset)).coerceIn(0L, 5_000L)
-        val target = if (state.isPlaying) state.positionMs + travelled else state.positionMs
+        lastReceived = Received(state, now, travelled)
+        if (localHold) {
+            (_state.value as? TogetherSessionState.Joined)?.takeIf { it.selfParticipantId == pid }?.let { _state.value = it.copy(roomState = state) }
+            return
+        }
+        applyToPlayer(state, if (state.isPlaying) state.positionMs + travelled else state.positionMs, pid)
+    }
 
+    /** Snaps the player back to the room as it is now, from the last state the host sent. */
+    private suspend fun resync() {
+        val r = lastReceived ?: return
+        val pid = selfParticipantId ?: return
+        val elapsed = SystemClock.elapsedRealtime() - r.at
+        applyToPlayer(r.state, if (r.state.isPlaying) r.state.positionMs + r.travel + elapsed else r.state.positionMs, pid)
+    }
+
+    private suspend fun applyToPlayer(state: TogetherRoomState, target: Long, pid: String) {
         withContext(Dispatchers.Main) {
             val player = player()
             applyingRemote = true
@@ -525,7 +545,6 @@ class TogetherController(
                     lastRemoteIndex = index
                 }
                 lastRemotePlayWhenReady = state.isPlaying
-                lastAppliedSentAt = sentAt
                 val joined = _state.value as? TogetherSessionState.Joined
                 if (joined != null && joined.selfParticipantId == pid) _state.value = joined.copy(roomState = state)
             } finally {
@@ -542,7 +561,7 @@ class TogetherController(
         val guest = client ?: return false
         if (!joined.roomState.settings.allowGuestsToControlPlayback) {
             notice(context.getString(R.string.together_host_controls_playback), key = "control-disabled")
-            ioScope.launch { applyRemoteRoomState(joined.roomState.copy(sentAtElapsedRealtimeMs = 0L)) }
+            ioScope.launch { resync() }
             return false
         }
         val now = SystemClock.elapsedRealtime()
@@ -600,8 +619,18 @@ class TogetherController(
         )
     }
 
+    /** Call right before the phone pauses itself, so that pause stays on this phone. */
+    fun holdLocally() {
+        if (isGuest) localHold = true
+    }
+
     fun onGuestPlayWhenReadyChanged(playWhenReady: Boolean) {
         if (applyingRemote || (SystemClock.elapsedRealtime() < suppressEchoUntil && lastRemotePlayWhenReady == playWhenReady)) return
+        if (localHold) {
+            // Playing again after a local pause: rejoin the room where it is now, without asking the host.
+            if (playWhenReady) { localHold = false; ioScope.launch { resync() } }
+            return
+        }
         requestControl(if (playWhenReady) ControlAction.Play else ControlAction.Pause)
     }
 
@@ -653,6 +682,8 @@ class TogetherController(
         lastRemoteIndex = -1
         lastSentAction = null
         pendingControl = null
+        localHold = false
+        lastReceived = null
     }
 
     // ---- Saved people and invites ----

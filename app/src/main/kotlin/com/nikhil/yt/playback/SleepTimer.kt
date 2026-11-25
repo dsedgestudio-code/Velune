@@ -21,6 +21,8 @@ class SleepTimer(
     private val scope: CoroutineScope,
     val player: Player,
     private val fade: MutableStateFlow<Float> = MutableStateFlow(1f),
+    /** Runs right before the timer pauses (Listen Together keeps that pause on this phone). */
+    private val beforePause: () -> Unit = {},
 ) : Player.Listener {
     private var sleepTimerJob: Job? = null
     var triggerTime by mutableStateOf(-1L)
@@ -46,6 +48,7 @@ class SleepTimer(
                 fade.value = fadeFactor(left, fadeMs)
                 delay(500)
             }
+            beforePause()
             player.pause()
             triggerTime = -1L
             delay(300) // let the pause land before restoring volume for next time
@@ -64,6 +67,7 @@ class SleepTimer(
     override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
         if (pauseWhenSongEnd) {
             pauseWhenSongEnd = false
+            beforePause()
             player.pause()
         }
     }
@@ -71,6 +75,7 @@ class SleepTimer(
     override fun onPlaybackStateChanged(@Player.State playbackState: Int) {
         if (playbackState == Player.STATE_ENDED && pauseWhenSongEnd) {
             pauseWhenSongEnd = false
+            beforePause()
             player.pause()
         }
     }
