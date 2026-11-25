@@ -58,6 +58,25 @@ class LoudnessProcessorTest {
     }
 
     @Test
+    fun limiterCatchesPeaksBetweenSamples() {
+        // A 12 kHz tone sampled at 45° lands every sample at 0.707 of its real crest. Sample peaks (0.85) sit
+        // under the ceiling, but the rebuilt wave would crest at 1.2 and overshoot: it must be turned down.
+        val p = LoudnessProcessor()
+        p.configure(AudioFormat(48_000, 1, C.ENCODING_PCM_FLOAT))
+        p.flush()
+        val input = ByteBuffer.allocateDirect(9_600 * 4).order(ByteOrder.nativeOrder())
+        repeat(9_600) { i -> input.putFloat((1.2 * sin(PI / 4 + PI / 2 * i)).toFloat()) }
+        input.flip()
+        p.queueInput(input)
+        val out = p.output.order(ByteOrder.nativeOrder()).asFloatBuffer()
+        val samples = FloatArray(out.remaining()).also { out.get(it) }
+        assertTrue(samples.drop(4_800).maxOf { abs(it) } < 0.75f)
+        val stats = p.takeStats()
+        assertEquals(9_600L, stats.frames)
+        assertTrue(stats.gainSum / stats.frames < 0.95)
+    }
+
+    @Test
     fun unityGainIsTransparent() {
         val peak = run(gainDb = 0f, amplitude = 0.5f).maxOf { abs(it.toInt()) }
         assertEquals(0.5f * 32767, peak.toFloat(), 50f)

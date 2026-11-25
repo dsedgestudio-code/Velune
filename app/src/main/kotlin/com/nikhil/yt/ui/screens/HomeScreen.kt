@@ -358,9 +358,16 @@ fun HomeScreen(
                     familiarity = familiarity,
                     onEnergyChange = setEnergy,
                     onFamiliarityChange = setFamiliarity,
-                    onPlay = {
+                    onPlay = { e, f ->
+                        val service = playerConnection.service
                         playerConnection.playQueue(
-                            com.nikhil.yt.playback.queues.MoodMixQueue(viewModel.database, energy, familiarity),
+                            com.nikhil.yt.playback.queues.MoodMixQueue(
+                                viewModel.database,
+                                taste = service.taste.model,
+                                isHidden = service.skipHabits::isHidden,
+                                energy = e,
+                                familiarity = f,
+                            ),
                         )
                     },
                     modifier = Modifier.padding(vertical = 12.dp).animateItem(),

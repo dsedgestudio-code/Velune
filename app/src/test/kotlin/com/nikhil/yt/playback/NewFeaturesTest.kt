@@ -75,6 +75,40 @@ class NewFeaturesTest {
         assertEquals("b", fresh.first().id)
     }
 
+    @Test
+    fun moodDial_tasteLeadsAndDislikesAreDropped() {
+        val loved = song("loved", "a1")
+        val meh = song("meh", "a2")
+        val disliked = song("nope", "a3")
+        val scores = mapOf("loved" to 2.0, "meh" to 0.0, "nope" to -1.0)
+        val out = MoodMixQueue.rank(listOf(meh, disliked, loved), emptySet(), emptySet(), 0.5f, Random(3), score = { scores.getValue(it.id) })
+        assertEquals(listOf("loved", "meh"), out.map { it.id })
+    }
+
+    @Test
+    fun moodDial_neverTheSameArtistTwiceInARow() {
+        val songs = listOf(song("x1", "x"), song("x2", "x"), song("y1", "y"))
+        val out = MoodMixQueue.rank(songs, emptySet(), emptySet(), 0.5f, Random(1), score = { if (it.id.startsWith("x")) 2.0 else 0.0 })
+        assertEquals(listOf("x", "y", "x"), out.map { it.artists.first().id })
+    }
+
+    @Test
+    fun adaptiveOutput_pushesQuietDevices_neverPastClean() {
+        // Volume pinned at max, limiter relaxed: push up a step.
+        assertEquals(1.5f, AdaptiveOutput.decide(1f, atMaxShare = 0.9f, lowShare = 0f, avgReductionDb = 0.5f, heavyShare = 0f), 1e-6f)
+        // Still pinned, but the limiter is squashing: cleanliness wins, back off.
+        assertEquals(0.5f, AdaptiveOutput.decide(1f, 0.9f, 0f, avgReductionDb = 3f, heavyShare = 0f), 1e-6f)
+        assertEquals(0.5f, AdaptiveOutput.decide(1f, 0.9f, 0f, 0.5f, heavyShare = 0.01f), 1e-6f)
+        // Listening quietly: ease back toward natural.
+        assertEquals(0.75f, AdaptiveOutput.decide(1f, 0f, lowShare = 0.8f, 0f, 0f), 1e-6f)
+        // In between: hold.
+        assertEquals(1f, AdaptiveOutput.decide(1f, 0.3f, 0.3f, 0.5f, 0f), 1e-6f)
+        // Bounds.
+        assertEquals(AdaptiveOutput.MAX_PUSH_DB, AdaptiveOutput.decide(AdaptiveOutput.MAX_PUSH_DB, 1f, 0f, 0f, 0f), 1e-6f)
+        assertEquals(0f, AdaptiveOutput.decide(0f, 0f, 1f, 0f, 0f), 1e-6f)
+        assertEquals("AirPods Pro", AdaptiveOutput.nameOf("bluetooth:AirPods Pro"))
+    }
+
     private fun song(id: String, artistId: String) = SongItem(
         id = id,
         title = id,

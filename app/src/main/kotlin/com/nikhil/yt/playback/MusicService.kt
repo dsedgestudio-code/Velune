@@ -344,11 +344,17 @@ class MusicService :
      * Within one album, songs share one gain (the lowest any of its tracks needed so far), so a quiet
      * interlude stays quiet next to the loud single instead of being pushed up to the same level.
      */
+    val adaptiveOutput by lazy { AdaptiveOutput(database) }
+
+    @Volatile
+    private var adaptiveOutputEnabled = true
+
     /** Give back what Immersive and crossfeed take off before the limiter, so turning them on doesn't make songs quieter. */
     private fun updateMakeupGain() {
         var db = 0f
         if (immersiveProcessor.enabled) db -= 20f * kotlin.math.log10(ImmersiveProcessor.HEADROOM)
         if (crossfeedProcessor.enabled && crossfeedProcessor.headphones) db += 20f * kotlin.math.log10(1f + CrossfeedProcessor.GAIN)
+        if (adaptiveOutputEnabled) db += adaptiveOutput.pushDb
         loudnessProcessor.makeupDb = db
         overlapLoudnessProcessor.makeupDb = db
     }
@@ -514,6 +520,8 @@ class MusicService :
             overlapCrossfeedProcessor.headphones = profile != OutputProfile.SPEAKER
             updateMakeupGain()
             scope.launch {
+                adaptiveOutput.onDevice(device)
+                updateMakeupGain()
                 deviceMemory.onDeviceChanged(device)
                 dataStore.data.first()[PlayerVolumeKey]?.let { playerVolume.value = it }
             }
@@ -657,9 +665,23 @@ class MusicService :
                 updateMakeupGain()
             }
 
+        dataStore.data
+            .map { it[com.nikhil.yt.constants.AdaptiveOutputKey] ?: true }
+            .distinctUntilChanged()
+            .collectLatest(scope) {
+                adaptiveOutputEnabled = it
+                updateMakeupGain()
+            }
+
         scope.launch {
             while (isActive) {
                 delay(10_000)
+                val stats = loudnessProcessor.takeStats() // always drain, so a paused stretch doesn't count later
+                if (player.isPlaying && adaptiveOutputEnabled) {
+                    val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                    val volume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC).toFloat() / max * playerVolume.value
+                    if (adaptiveOutput.onListened(10_000, volume, stats)) updateMakeupGain()
+                }
                 val item = player.currentMediaItem ?: continue
                 if (player.isPlaying && player.duration > 0) longTrackResume.save(item.mediaId, player.currentPosition, player.duration)
             }

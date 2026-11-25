@@ -100,17 +100,6 @@ class TasteModel(private val now: () -> Long = System::currentTimeMillis) {
         return spreadArtists(mixed + disliked, artistKeys)
     }
 
-    private fun <T> spreadArtists(list: List<T>, artistKeys: (T) -> List<String>): List<T> {
-        val out = list.toMutableList()
-        for (i in 1 until out.size) {
-            val prev = artistKeys(out[i - 1]).firstOrNull() ?: continue
-            if (artistKeys(out[i]).firstOrNull() != prev) continue
-            val swap = (i + 1 until out.size).firstOrNull { artistKeys(out[it]).firstOrNull() != prev } ?: continue
-            out.add(i, out.removeAt(swap))
-        }
-        return out
-    }
-
     private fun bump(map: HashMap<String, Signal>, key: String, reward: Double, t: Long) {
         map[key] = Signal((decayed(map[key], t) + reward).coerceIn(-10.0, 10.0), t)
     }
@@ -118,6 +107,18 @@ class TasteModel(private val now: () -> Long = System::currentTimeMillis) {
     internal fun decayed(s: Signal?, t: Long): Double = s?.let { it.score * 0.5.pow((t - it.at).toDouble() / HALF_LIFE_MS) } ?: 0.0
 
     companion object {
+        /** Never the same lead artist twice in a row: pull the next different one forward. */
+        fun <T> spreadArtists(list: List<T>, artistKeys: (T) -> List<String>): List<T> {
+            val out = list.toMutableList()
+            for (i in 1 until out.size) {
+                val prev = artistKeys(out[i - 1]).firstOrNull() ?: continue
+                if (artistKeys(out[i]).firstOrNull() != prev) continue
+                val swap = (i + 1 until out.size).firstOrNull { artistKeys(out[it]).firstOrNull() != prev } ?: continue
+                out.add(i, out.removeAt(swap))
+            }
+            return out
+        }
+
         const val HALF_LIFE_MS = 21L * 24 * 60 * 60 * 1000
         const val SESSION_MS = 2L * 60 * 60 * 1000
         const val EXPLORE_EVERY = 5

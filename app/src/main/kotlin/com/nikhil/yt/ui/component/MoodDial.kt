@@ -19,6 +19,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,6 +56,9 @@ import kotlin.math.sin
 /**
  * Home's mood dial: drag round the arc from calm to hype, slide from new to familiar, then play.
  * The word in the middle is the mood you'll get, so the dial never feels abstract.
+ *
+ * The dial moves on local state and only saves when you let go: saving on every drag frame wrote to disk
+ * and recomposed all of Home 60 times a second, which is what made it lag.
  */
 @Composable
 fun MoodDial(
@@ -56,23 +66,32 @@ fun MoodDial(
     familiarity: Float,
     onEnergyChange: (Float) -> Unit,
     onFamiliarityChange: (Float) -> Unit,
-    onPlay: () -> Unit,
+    onPlay: (energy: Float, familiarity: Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val moods = stringArrayResource(R.array.mood_ladder)
-    val mood = moods[(energy * moods.lastIndex).roundToInt().coerceIn(0, moods.lastIndex)]
+    var dial by remember { mutableFloatStateOf(energy) }
+    var fam by remember { mutableFloatStateOf(familiarity) }
+    LaunchedEffect(energy) { dial = energy } // e.g. restored per-device or from another screen
+    LaunchedEffect(familiarity) { fam = familiarity }
+    val step = (dial * moods.lastIndex).roundToInt().coerceIn(0, moods.lastIndex)
+    val mood = moods[step]
+    var lastStep by remember { mutableIntStateOf(step) }
     val haptics = LocalHapticFeedback.current
+    val commitEnergy by rememberUpdatedState(onEnergyChange)
     val track = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.10f)
     val calm = MaterialTheme.colorScheme.tertiary
     val hype = MaterialTheme.colorScheme.primary
     val panel = MaterialTheme.colorScheme.surfaceContainer
     val dialLabel = stringResource(R.string.mood_dial)
 
-    fun setEnergy(value: Float) {
-        val v = value.coerceIn(0f, 1f)
-        val before = (energy * moods.lastIndex).roundToInt()
-        if ((v * moods.lastIndex).roundToInt() != before) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-        onEnergyChange(v)
+    fun moveTo(value: Float) {
+        dial = value.coerceIn(0f, 1f)
+        val s = (dial * moods.lastIndex).roundToInt()
+        if (s != lastStep) {
+            lastStep = s
+            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove) // once per mood, not per frame
+        }
     }
 
     Column(
@@ -93,22 +112,25 @@ fun MoodDial(
                     .semantics {
                         contentDescription = dialLabel
                         stateDescription = mood
-                        progressBarRangeInfo = androidx.compose.ui.semantics.ProgressBarRangeInfo(energy, 0f..1f, moods.size - 2)
-                        setProgress { setEnergy(it); true }
+                        progressBarRangeInfo = androidx.compose.ui.semantics.ProgressBarRangeInfo(dial, 0f..1f, moods.size - 2)
+                        setProgress { moveTo(it); commitEnergy(dial); true }
                     }
                     .pointerInput(Unit) {
-                        fun angleToEnergy(p: Offset) {
-                            val cx = size.width / 2f
-                            val cy = size.height.toFloat()
-                            val angle = atan2(cy - p.y, p.x - cx) // PI at the left (calm), 0 at the right (hype)
-                            setEnergy(1f - (angle / PI.toFloat()).coerceIn(0f, 1f))
+                        fun energyAt(p: Offset): Float {
+                            val angle = atan2(size.height - p.y, p.x - size.width / 2f) // PI at the left (calm), 0 at the right (hype)
+                            return 1f - (angle / PI.toFloat()).coerceIn(0f, 1f)
                         }
-                        detectDragGestures(onDragStart = ::angleToEnergy) { change, _ -> angleToEnergy(change.position) }
+                        detectDragGestures(
+                            onDragStart = { moveTo(energyAt(it)) },
+                            onDragEnd = { commitEnergy(dial) },
+                            onDragCancel = { commitEnergy(dial) },
+                        ) { change, _ -> moveTo(energyAt(change.position)) }
                     }
                     .pointerInput(Unit) {
                         detectTapGestures { p ->
                             val angle = atan2(size.height - p.y, p.x - size.width / 2f)
-                            setEnergy(1f - (angle / PI.toFloat()).coerceIn(0f, 1f))
+                            moveTo(1f - (angle / PI.toFloat()).coerceIn(0f, 1f))
+                            commitEnergy(dial)
                         }
                     },
             ) {
@@ -119,10 +141,10 @@ fun MoodDial(
                 drawArc(track, 180f, 180f, false, topLeft, arc, style = Stroke(stroke, cap = StrokeCap.Round))
                 drawArc(
                     Brush.horizontalGradient(listOf(calm, hype)),
-                    180f, 180f * energy, false, topLeft, arc,
+                    180f, 180f * dial, false, topLeft, arc,
                     style = Stroke(stroke, cap = StrokeCap.Round),
                 )
-                val theta = PI.toFloat() * (1f - energy)
+                val theta = PI.toFloat() * (1f - dial)
                 val knob = Offset(size.width / 2f + radius * cos(theta), size.height - radius * sin(theta))
                 drawCircle(hype, radius = stroke * 0.9f, center = knob)
                 drawCircle(panel, radius = stroke * 0.42f, center = knob)
@@ -139,15 +161,16 @@ fun MoodDial(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(stringResource(R.string.mood_new), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Slider(
-                value = familiarity,
-                onValueChange = onFamiliarityChange,
+                value = fam,
+                onValueChange = { fam = it },
+                onValueChangeFinished = { onFamiliarityChange(fam) },
                 modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
             )
             Text(stringResource(R.string.mood_familiar), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Spacer(Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-            Button(onClick = onPlay) {
+            Button(onClick = { onEnergyChange(dial); onFamiliarityChange(fam); onPlay(dial, fam) }) {
                 Text(stringResource(R.string.mood_play, mood))
             }
         }

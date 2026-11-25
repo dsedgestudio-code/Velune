@@ -1323,6 +1323,12 @@ interface DatabaseDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insert(searchHistory: SearchHistory)
 
+    @Query("SELECT * FROM device_sound_profile WHERE id = :id")
+    suspend fun deviceSoundProfile(id: String): com.nikhil.yt.db.entities.DeviceSoundProfile?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveDeviceSoundProfile(profile: com.nikhil.yt.db.entities.DeviceSoundProfile)
+
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     fun insert(event: Event)
 

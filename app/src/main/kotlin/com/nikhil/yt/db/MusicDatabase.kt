@@ -58,7 +58,7 @@ import java.util.concurrent.Executor
 import kotlin.coroutines.resume
 
 private const val TAG = "MusicDatabase"
-private const val CURRENT_VERSION = 28
+private const val CURRENT_VERSION = 29 // 29: device_sound_profile (new table only; UniversalMigration creates it)
 
 class MusicDatabase(
     private val delegate: InternalDatabase,
@@ -124,7 +124,8 @@ class MusicDatabase(
         PlayCountEntity::class,
         TagEntity::class,
         PlaylistTagMap::class,
-        com.nikhil.yt.db.entities.SongSkipEntity::class
+        com.nikhil.yt.db.entities.SongSkipEntity::class,
+        com.nikhil.yt.db.entities.DeviceSoundProfile::class,
     ],
     views = [
         SortedSongArtistMap::class,

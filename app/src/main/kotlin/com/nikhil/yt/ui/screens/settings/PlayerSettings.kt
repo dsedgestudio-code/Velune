@@ -29,6 +29,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarScrollBehavior
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -117,6 +118,9 @@ fun PlayerSettings(
         defaultValue = false
     )
     val (crossfeed, onCrossfeedChange) = rememberPreference(com.nikhil.yt.constants.CrossfeedKey, defaultValue = false)
+    val (adaptiveOutput, onAdaptiveOutputChange) = rememberPreference(com.nikhil.yt.constants.AdaptiveOutputKey, defaultValue = true)
+    val deviceSound by (com.nikhil.yt.LocalPlayerConnection.current?.service?.adaptiveOutput?.profile
+        ?: remember { kotlinx.coroutines.flow.MutableStateFlow<com.nikhil.yt.db.entities.DeviceSoundProfile?>(null) }).collectAsState()
     val skipHabits = com.nikhil.yt.LocalPlayerConnection.current?.service?.skipHabits
     var hiddenCount by remember { mutableIntStateOf(skipHabits?.hiddenCount() ?: 0) }
     val (audioOffload, onAudioOffloadChange) = rememberPreference(
@@ -346,6 +350,22 @@ fun PlayerSettings(
             checked = crossfeed,
             onCheckedChange = { enabled ->
                 onCrossfeedChange(enabled)
+                if (enabled) onAudioOffloadChange(false)
+            }
+        )
+
+        SwitchPreference(
+            title = { Text(stringResource(R.string.adaptive_output)) },
+            description = deviceSound?.takeIf { adaptiveOutput }?.let { p ->
+                val name = if (p.id == "speaker") stringResource(R.string.phone_speaker) else p.name
+                val minutes = (p.listenedMs / 60_000L).toInt()
+                if (minutes == 0) stringResource(R.string.adaptive_output_learning, name)
+                else stringResource(R.string.adaptive_output_state, name, "%.1f".format(p.pushDb), minutes)
+            } ?: stringResource(R.string.adaptive_output_desc),
+            icon = { Icon(painterResource(R.drawable.graphic_eq), null) },
+            checked = adaptiveOutput,
+            onCheckedChange = { enabled ->
+                onAdaptiveOutputChange(enabled)
                 if (enabled) onAudioOffloadChange(false)
             }
         )

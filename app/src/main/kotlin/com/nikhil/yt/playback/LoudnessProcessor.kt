@@ -104,6 +104,7 @@ class LoudnessProcessor : BaseAudioProcessor() {
         if (profile.highPassHz != highPassHz) setHighPass(profile.highPassHz)
         val filtering = highPassHz > 0f
         inputBuffer.order(ByteOrder.nativeOrder())
+        bufGainSum = 0.0; bufHeavy = 0L; bufFrames = 0L
 
         while (inputBuffer.remaining() >= channels * bytesPerSample) {
             currentGain += (targetGain - currentGain) * gainSmoothCoef
@@ -120,7 +121,11 @@ class LoudnessProcessor : BaseAudioProcessor() {
                 val gained = (if (filtering) highPass(ch, s) else s) * currentGain
                 val leaving = delay[base + ch]
                 delay[base + ch] = gained
-                peak = maxOf(peak, abs(gained))
+                // True peak: the wave can crest between two samples, and that crest is what overshoots once
+                // the DAC or a Bluetooth codec rebuilds it. Estimate it at the midpoint of the last interval.
+                val between = (9f * (tp1[ch] + tp2[ch]) - tp3[ch] - gained) / 16f
+                tp3[ch] = tp2[ch]; tp2[ch] = tp1[ch]; tp1[ch] = gained
+                peak = maxOf(peak, abs(gained), abs(between))
                 scratch[ch] = leaving
             }
             val need = if (peak > ceiling) ceiling / peak else 1f
@@ -131,6 +136,9 @@ class LoudnessProcessor : BaseAudioProcessor() {
             val target = window.min()
             limiterEnv += (target - limiterEnv) * (if (target < limiterEnv) attackCoef else releaseCoef)
             val gain = minOf(limiterEnv, outRequired) // guarantee: the outgoing frame is never over the ceiling
+            bufGainSum += gain
+            bufFrames++
+            if (gain < HEAVY_GAIN) bufHeavy++
 
             if (++meterFrames >= meterWindow) {
                 AudioLevelMeter.publishRms(sqrt(meterSumSq / (meterFrames * channels)))
@@ -143,6 +151,24 @@ class LoudnessProcessor : BaseAudioProcessor() {
             }
         }
         out.flip()
+        synchronized(statsLock) {
+            statGainSum += bufGainSum; statHeavy += bufHeavy; statFrames += bufFrames
+        }
+    }
+
+    private var bufGainSum = 0.0
+    private var bufHeavy = 0L
+    private var bufFrames = 0L
+    private val statsLock = Any()
+    private var statGainSum = 0.0
+    private var statHeavy = 0L
+    private var statFrames = 0L
+
+    /** How hard the limiter worked since the last call: frames seen, their summed gain, and frames cut by more than 6 dB. */
+    data class Stats(val frames: Long, val gainSum: Double, val heavyFrames: Long)
+
+    fun takeStats(): Stats = synchronized(statsLock) {
+        Stats(statFrames, statGainSum, statHeavy).also { statGainSum = 0.0; statHeavy = 0L; statFrames = 0L }
     }
 
     /** At the end of a stream, let the last [lookahead] frames out of the delay line. */
@@ -181,6 +207,7 @@ class LoudnessProcessor : BaseAudioProcessor() {
     }
 
     private var scratch = FloatArray(8)
+    private var tp1 = FloatArray(8); private var tp2 = FloatArray(8); private var tp3 = FloatArray(8) // last 3 samples per channel
 
     private fun setHighPass(hz: Float) {
         highPassHz = hz
@@ -208,6 +235,7 @@ class LoudnessProcessor : BaseAudioProcessor() {
         delay = FloatArray(lookahead * channels)
         required = FloatArray(lookahead) { 1f }
         scratch = FloatArray(channels.coerceAtLeast(1))
+        tp1 = FloatArray(channels.coerceAtLeast(1)); tp2 = FloatArray(tp1.size); tp3 = FloatArray(tp1.size)
         frameCount = 0L
         window.clear(lookahead)
     }
@@ -258,6 +286,9 @@ class LoudnessProcessor : BaseAudioProcessor() {
         const val CEILING = 0.8912509f
 
         const val LOOKAHEAD_SEC = 0.005f
+
+        /** Below this the limiter is cutting more than 6 dB: audible squashing, the "burst" to avoid. */
+        const val HEAVY_GAIN = 0.5f
 
         fun ceilingFor(headroomDb: Float, profile: OutputProfile = OutputProfile.BLUETOOTH): Float =
             10f.pow((profile.ceilingDb - headroomDb.coerceIn(0f, 12f)) / 20f)

@@ -373,6 +373,11 @@
     <string name="hidden_songs_desc">%1$d hidden from autoplay. Tap to bring them all back.</string>
     <string name="crossfeed">Concert hall</string>
     <string name="crossfeed_desc">On headphones, blends a little of each side into the other, like speakers in a room</string>
+    <string name="adaptive_output">Adaptive output</string>
+    <string name="adaptive_output_desc">Learns how loud each headphone and speaker can go without distorting, and uses all of it</string>
+    <string name="adaptive_output_state">%1$s · +%2$s dB, learned from %3$d min</string>
+    <string name="adaptive_output_learning">%1$s · learning as you listen</string>
+    <string name="phone_speaker">Phone speaker</string>
     <string name="share_card">Share card</string>
     <string name="done">Done</string>
     <string name="whole_year">Whole year</string>
