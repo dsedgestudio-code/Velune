@@ -53,10 +53,12 @@ class ImmersiveProcessor : BaseAudioProcessor() {
                 Biquad.highShelf(fs, 10000.0, 2.5), // air / crispness
             )
         }
-        // Early reflections of a mid-size hall: 13/19/29/37 ms (stereo ring buffer, interleaved L/R).
-        taps = intArrayOf(13, 19, 29, 37).map { (it * fs / 1000).roundToInt() }.toIntArray()
-        echo = FloatArray((taps.max() + 1) * 2)
+        // Early reflections of a room around the listener, built only from the side (off-centre) signal.
+        taps = intArrayOf(7, 13, 19, 29, 37, 47).map { (it * fs / 1000).roundToInt() }.toIntArray()
+        echo = FloatArray(taps.max() + 1)
         echoPos = 0
+        sideLpCoef = 1f - exp(-2f * PI.toFloat() * SIDE_BASS_HZ / fs.toFloat())
+        sideLp = 0f
         mixCoef = 1f - exp(-1f / (0.15f * fs.toFloat())) // ~150 ms on/off cross-fade
         return inputAudioFormat
     }
@@ -95,30 +97,33 @@ class ImmersiveProcessor : BaseAudioProcessor() {
         out.flip()
     }
 
-    private fun widenAndAmbience(lr: FloatArray) {
-        // Mid/side widening: mono-safe (mid untouched), spreads the stage.
-        val mid = (lr[0] + lr[1]) * 0.5f
-        val side = (lr[0] - lr[1]) * 0.5f * WIDTH
-        var l = mid + side
-        var r = mid - side
+    private var sideLp = 0f
+    private var sideLpCoef = 0f
 
-        // Faint early reflections, cross-fed (left reflections arrive on the right) like hall walls.
-        val size = echo.size / 2
-        var reflL = 0f
-        var reflR = 0f
+    /**
+     * "In your head and all around you": the mid (vocals, kick, bass) stays untouched and centred, so it sits
+     * close and solid; only the side signal is widened and given room. Side bass is left alone, because wide
+     * bass sounds hollow and phasey. The reflections are side-only and opposite-signed per ear, so they wrap
+     * around the head and cancel to nothing in mono.
+     */
+    private fun widenAndAmbience(lr: FloatArray) {
+        val mid = (lr[0] + lr[1]) * 0.5f
+        val side = (lr[0] - lr[1]) * 0.5f
+        sideLp += (side - sideLp) * sideLpCoef
+        val wide = sideLp + (side - sideLp) * WIDTH
+
+        val size = echo.size
+        var refl = 0f
         for ((i, d) in taps.withIndex()) {
-            val idx = ((echoPos - d + size) % size) * 2
-            val g = REFLECTION_GAIN / (i + 1)
-            reflL += echo[idx + 1] * g
-            reflR += echo[idx] * g
+            val g = REFLECTION_GAIN / (1 + i * 0.6f)
+            // Alternate the sign so successive reflections come from alternating sides.
+            refl += echo[(echoPos - d + size) % size] * (if (i % 2 == 0) g else -g)
         }
-        echo[echoPos * 2] = l
-        echo[echoPos * 2 + 1] = r
+        echo[echoPos] = wide + mid * 0.15f // a little centre in the room, so it isn't only the edges echoing
         echoPos = (echoPos + 1) % size
-        l += reflL
-        r += reflR
-        lr[0] = l
-        lr[1] = r
+
+        lr[0] = mid + wide + refl
+        lr[1] = mid - wide - refl
     }
 
     private fun write(out: ByteBuffer, y: Float, isFloat: Boolean) {
@@ -128,7 +133,8 @@ class ImmersiveProcessor : BaseAudioProcessor() {
     override fun onFlush() {
         filters.forEach { chain -> chain.forEach(Biquad::reset) }
         echo.fill(0f)
-        mix = if (enabled) 1f else 0f
+        sideLp = 0f
+        mix =if (enabled) 1f else 0f
     }
 
     /** RBJ audio-EQ-cookbook biquad, transposed direct form II. */
@@ -180,8 +186,9 @@ class ImmersiveProcessor : BaseAudioProcessor() {
     }
 
     companion object {
-        private const val HEADROOM = 0.70f // -3 dB: more boosts now, keep headroom for the limiter
-        private const val WIDTH = 1.5f // wider for earbuds (narrow imaging)
-        private const val REFLECTION_GAIN = 0.08f // subtler: earbuds are already "in-head"
+        internal const val HEADROOM = 0.70f // -3 dB: more boosts now, keep headroom for the limiter
+        private const val WIDTH = 1.6f // side above [SIDE_BASS_HZ]: earbuds image narrow
+        private const val SIDE_BASS_HZ = 250f
+        private const val REFLECTION_GAIN = 0.14f // side-only, so it can be stronger without washing vocals
     }
 }

@@ -344,6 +344,15 @@ class MusicService :
      * Within one album, songs share one gain (the lowest any of its tracks needed so far), so a quiet
      * interlude stays quiet next to the loud single instead of being pushed up to the same level.
      */
+    /** Give back what Immersive and crossfeed take off before the limiter, so turning them on doesn't make songs quieter. */
+    private fun updateMakeupGain() {
+        var db = 0f
+        if (immersiveProcessor.enabled) db -= 20f * kotlin.math.log10(ImmersiveProcessor.HEADROOM)
+        if (crossfeedProcessor.enabled && crossfeedProcessor.headphones) db += 20f * kotlin.math.log10(1f + CrossfeedProcessor.GAIN)
+        loudnessProcessor.makeupDb = db
+        overlapLoudnessProcessor.makeupDb = db
+    }
+
     private fun albumAwareGain(albumId: String?, trackGain: Float): Float {
         if (albumId.isNullOrBlank()) return trackGain.also { albumGain = null }
         val gain = albumGain?.takeIf { it.first == albumId }?.second?.let { minOf(it, trackGain) } ?: trackGain
@@ -503,6 +512,7 @@ class MusicService :
             overlapLoudnessProcessor.outputProfile = profile
             crossfeedProcessor.headphones = profile != OutputProfile.SPEAKER
             overlapCrossfeedProcessor.headphones = profile != OutputProfile.SPEAKER
+            updateMakeupGain()
             scope.launch {
                 deviceMemory.onDeviceChanged(device)
                 dataStore.data.first()[PlayerVolumeKey]?.let { playerVolume.value = it }
@@ -635,6 +645,7 @@ class MusicService :
             .collectLatest(scope) {
                 immersiveProcessor.enabled = it
                 overlapImmersiveProcessor.enabled = it
+                updateMakeupGain()
             }
 
         dataStore.data
@@ -643,6 +654,7 @@ class MusicService :
             .collectLatest(scope) {
                 crossfeedProcessor.enabled = it
                 overlapCrossfeedProcessor.enabled = it
+                updateMakeupGain()
             }
 
         scope.launch {

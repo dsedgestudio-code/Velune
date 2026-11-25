@@ -12,13 +12,13 @@ import android.os.Looper
  * How the final stage should shape sound for what it plays through.
  * - Bluetooth re-encodes the audio (AAC on AirPods, SBC, LDAC), which overshoots near full scale: keep -1 dB.
  * - Wired and USB play what we send: -0.3 dB keeps the most dynamics.
- * - The phone's own speaker can't reproduce deep bass; feeding it only makes it rattle and distort at
- *   high volume, so roll off below ~150 Hz and keep a little extra room.
+ * - The phone's own speaker can't reproduce deep bass; feeding it only makes it rattle at high volume,
+ *   so roll off below ~100 Hz (the phone's own DSP handles the rest; 150 Hz also cut the punch it can play).
  */
 enum class OutputProfile(val ceilingDb: Float, val highPassHz: Float) {
     BLUETOOTH(-1.0f, 0f),
     WIRED(-0.3f, 0f),
-    SPEAKER(-1.5f, 150f),
+    SPEAKER(-1.0f, 100f),
     ;
 
     companion object {

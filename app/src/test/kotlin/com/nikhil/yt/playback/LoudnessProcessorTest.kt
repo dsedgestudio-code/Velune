@@ -44,6 +44,20 @@ class LoudnessProcessorTest {
     }
 
     @Test
+    fun makeupGainGivesBackTheLevel() {
+        val p = LoudnessProcessor()
+        p.makeupDb = 6f
+        p.configure(AudioFormat(48_000, 1, C.ENCODING_PCM_FLOAT))
+        p.flush()
+        val input = ByteBuffer.allocateDirect(4_800 * 4).order(ByteOrder.nativeOrder())
+        repeat(4_800) { input.putFloat(0.1f) }
+        input.flip()
+        p.queueInput(input)
+        val out = p.output.order(ByteOrder.nativeOrder()).asFloatBuffer()
+        assertEquals(0.1995f, out.get(4_000), 1e-3f)
+    }
+
+    @Test
     fun unityGainIsTransparent() {
         val peak = run(gainDb = 0f, amplitude = 0.5f).maxOf { abs(it.toInt()) }
         assertEquals(0.5f * 32767, peak.toFloat(), 50f)
@@ -51,7 +65,7 @@ class LoudnessProcessorTest {
 
     @Test
     fun normalizationGainIsClamped() {
-        assertEquals(-5f, LoudnessProcessor.normalizationGainDb(8f), 0f) // aims 3 dB above YouTube's reference
+        assertEquals(-3f, LoudnessProcessor.normalizationGainDb(8f), 0f) // aims 5 dB above YouTube's reference
         assertEquals(6f, LoudnessProcessor.normalizationGainDb(-20f), 0f)
         assertEquals(-15f, LoudnessProcessor.normalizationGainDb(30f), 0f)
     }
@@ -104,7 +118,7 @@ class LoudnessProcessorTest {
 
     @Test
     fun phoneSpeaker_rollsOffDeepBass_butKeepsTheMids() {
-        assertTrue(peakOfTone(40.0, OutputProfile.SPEAKER) < 0.5f * 0.15f) // ~-17 dB at 40 Hz
+        assertTrue(peakOfTone(30.0, OutputProfile.SPEAKER) < 0.5f * 0.15f) // ~-21 dB at 30 Hz
         assertEquals(0.5f, peakOfTone(1_000.0, OutputProfile.SPEAKER), 0.01f)
         assertEquals(0.5f, peakOfTone(40.0, OutputProfile.WIRED), 0.01f) // headphones keep the bass
     }

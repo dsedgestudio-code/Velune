@@ -210,13 +210,14 @@ class AudioEffectsController(
 
     companion object {
         /**
-         * The most these system effects can raise the level after LoudnessProcessor's limiter: the highest
-         * boosted EQ band, plus bass boost (up to ~8 dB at full strength on typical devices).
+         * Room to leave for these system effects, which run after LoudnessProcessor's limiter. A boosted band
+         * only lifts the peaks that fall in that band, so the real overshoot on full-range music is about half
+         * the band's boost; reserving the whole boost (as before) made every EQ'd song several dB quieter.
          */
         fun postEffectsHeadroomDb(settings: EqSettings): Float {
             val eq = if (settings.enabled) (settings.bandLevelsMb.maxOrNull() ?: 0).coerceAtLeast(0) / 100f else 0f
             val bass = if (settings.bassBoostEnabled) settings.bassBoostStrength.coerceIn(0, 1000) / 1000f * 8f else 0f
-            return (eq + bass).coerceIn(0f, 12f)
+            return ((eq + bass) * 0.5f).coerceIn(0f, 6f)
         }
 
         fun settingsFrom(prefs: Preferences): EqSettings {

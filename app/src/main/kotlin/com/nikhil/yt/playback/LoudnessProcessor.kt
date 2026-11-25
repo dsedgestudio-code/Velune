@@ -39,6 +39,13 @@ class LoudnessProcessor : BaseAudioProcessor() {
     @Volatile
     var headroomDb: Float = 0f
 
+    /**
+     * Level given back for what the stages before this one had to take off to stay clean in 16-bit
+     * (Immersive's pre-attenuation, crossfeed's normalization). This processor's limiter catches the peaks.
+     */
+    @Volatile
+    var makeupDb: Float = 0f
+
     /** What the audio plays through (Bluetooth, wired, phone speaker); see [OutputProfile]. */
     @Volatile
     var outputProfile: OutputProfile = OutputProfile.BLUETOOTH
@@ -90,7 +97,7 @@ class LoudnessProcessor : BaseAudioProcessor() {
         val out = replaceOutputBuffer(remaining)
         val isFloat = inputAudioFormat.encoding == C.ENCODING_PCM_FLOAT
         val bytesPerSample = if (isFloat) 4 else 2
-        val targetGain = 10f.pow(gainDb / 20f)
+        val targetGain = 10f.pow((gainDb + makeupDb) / 20f)
         val profile = outputProfile
         val ceiling = ceilingFor(headroomDb, profile)
         if (delay.size != lookahead * channels) resetDelay()
@@ -159,7 +166,7 @@ class LoudnessProcessor : BaseAudioProcessor() {
     }
 
     override fun onFlush() {
-        currentGain = 10f.pow(gainDb / 20f) // seek/new song: start at the right level instead of ramping
+        currentGain = 10f.pow((gainDb + makeupDb) / 20f) // seek/new song: start at the right level instead of ramping
         limiterEnv = 1f
         resetDelay()
         highPassHz = -1f // clear the filter's memory: no thump from the previous position
@@ -239,13 +246,13 @@ class LoudnessProcessor : BaseAudioProcessor() {
     companion object {
         /**
          * YouTube's loudnessDb is relative to its reference level (positive = louder than reference).
-         * We aim [TARGET_OFFSET_DB] above that reference (about Spotify's "Loud"), so songs aren't turned down
-         * so far that phones and Bluetooth headphones sound quiet; the limiter keeps the extra level clean.
+         * We aim [TARGET_OFFSET_DB] above that reference (about -9 LUFS, where most modern masters already sit),
+         * so typical songs play close to as mastered instead of being turned down; only the outliers move.
          * Upward gain is capped at +6 dB so quiet, dynamic recordings aren't squashed.
          */
         fun normalizationGainDb(loudnessDb: Float): Float = (TARGET_OFFSET_DB - loudnessDb).coerceIn(-15f, 6f)
 
-        const val TARGET_OFFSET_DB = 3f
+        const val TARGET_OFFSET_DB = 5f
 
         /** -1 dBFS, the Bluetooth ceiling: room for codec overshoot when AAC (AirPods) or SBC re-encodes. */
         const val CEILING = 0.8912509f
