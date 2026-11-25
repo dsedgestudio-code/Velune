@@ -40,7 +40,7 @@
         tools:targetApi="tiramisu">
         <meta-data
             android:name="androidx.media3.session.default_notification_icon"
-            android:resource="@drawable/ic_velune_concept" />
+            android:resource="@drawable/ic_spectra_ghost" />
 
         <uses-library
             android:name="org.apache.http.legacy"
@@ -68,6 +68,9 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
 
+                <data
+                    android:host="together"
+                    android:scheme="spectra" />
                 <data
                     android:host="together"
                     android:scheme="velune" />
@@ -190,7 +193,7 @@
 
         <activity
             android:name=".DebugActivity"
-            android:exported="true"
+            android:exported="false"
             android:process=":crash"
             android:theme="@style/Theme.VeluneApp">
         </activity>
@@ -210,6 +213,11 @@
             android:name=".ui.screens.settings.PoTokenExtractionActivity"
             android:exported="false"
             android:theme="@style/Theme.VeluneApp" />
+        <!-- QR scanner for Listen Together codes: follow the phone's orientation instead of forcing landscape. -->
+        <activity
+            android:name="com.journeyapps.barcodescanner.CaptureActivity"
+            android:screenOrientation="fullSensor"
+            tools:replace="screenOrientation" />
     </application>
 
 </manifest>

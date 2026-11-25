@@ -512,6 +512,7 @@ fun HomeScreen(
                 visible = allLocalItems.isNotEmpty() || allYtItems.isNotEmpty(),
                 lazyListState = lazylistState,
                 icon = R.drawable.shuffle,
+                contentDescription = stringResource(R.string.shuffle),
                 onClick = {
                     val local = when {
                         allLocalItems.isNotEmpty() && allYtItems.isNotEmpty() -> Random.nextFloat() < 0.5

@@ -35,6 +35,8 @@ import androidx.compose.ui.unit.sp
 import com.nikhil.yt.R
 import com.nikhil.yt.constants.PlaylistSortType
 import com.nikhil.yt.constants.PlaylistSongSortType
+import com.nikhil.yt.constants.SongSortType
+import com.nikhil.yt.constants.AutoPlaylistSongSortType
 
 @Composable
 inline fun <reified T : Enum<T>> SortHeader(
@@ -108,6 +110,8 @@ inline fun <reified T : Enum<T>> SortHeader(
                 when (sortType) {
                     is PlaylistSongSortType -> sortType != PlaylistSongSortType.CUSTOM
                     is PlaylistSortType -> sortType != PlaylistSortType.CUSTOM
+                    is SongSortType -> sortType != SongSortType.CUSTOM
+                    is AutoPlaylistSongSortType -> sortType != AutoPlaylistSongSortType.CUSTOM
                     else -> true
                 }
 

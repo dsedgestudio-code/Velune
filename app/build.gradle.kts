@@ -23,8 +23,8 @@ android {
     applicationId = "com.nikhil.yt"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10
-        versionName = "1.1.2 "
+        versionCode = 11
+        versionName = "1.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -80,13 +80,10 @@ android {
 
     signingConfigs {
         create("release") {
-            val keystoreFile = file("keystore/release.keystore")
-            if(keystoreFile.exists()) {
-                storeFile = keystoreFile
-                storePassword = System.getenv("STORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS")
-                keyPassword = System.getenv("KEY_PASSWORD")
-            }
+            storeFile = file("keystore/release.keystore")
+            storePassword = "velune123"
+            keyAlias = "velune"
+            keyPassword = "velune123"
         }
     }
 
@@ -158,6 +155,9 @@ ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
 
+// MigrationTestHelper reads exported schemas from test assets.
+android.sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
+
 dependencies {
     implementation(libs.guava)
     implementation(libs.coroutines.guava)
@@ -221,6 +221,7 @@ dependencies {
     implementation("com.github.Kyant0:m3color:2025.4")
     implementation(libs.backdrop)
 
+    implementation(libs.zxing.embedded)
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.okhttp)
     implementation(libs.ktor.serialization.json)
@@ -234,6 +235,10 @@ dependencies {
 
     implementation(libs.timber)
     testImplementation(libs.junit)
+    androidTestImplementation(libs.junit)
+    androidTestImplementation("androidx.room:room-testing:${libs.versions.room.get()}")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
     // Ensure ProcessLifecycleOwner is available for the presence manager and CI unit tests
     implementation("com.github.therealbush:translator:1.1.1")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")

@@ -38,6 +38,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -65,6 +67,7 @@ constructor(
             AutoPlaylistSongSortType.NAME -> SongSortType.NAME
             AutoPlaylistSongSortType.ARTIST -> SongSortType.ARTIST
             AutoPlaylistSongSortType.PLAY_TIME -> SongSortType.PLAY_TIME
+            AutoPlaylistSongSortType.CUSTOM -> SongSortType.CUSTOM
         }
 
     @OptIn(ExperimentalCoroutinesApi::class)
@@ -85,13 +88,11 @@ constructor(
                 when (playlist) {
                     "liked" -> database.likedSongs(songSortType, descending, hideVideo).map { it.filterExplicit(hideExplicit) }
                     "downloaded" -> downloadUtil.downloads.flatMapLatest { downloads ->
-                        database.allSongs()
+                        // Query only the downloaded songs (was: the whole library, filtered in memory).
+                        val ids = downloads.filterValues { it.state == Download.STATE_COMPLETED }.keys.toList()
+                        (if (ids.isEmpty()) flowOf(emptyList())
+                        else combine(ids.chunked(900).map { database.songsByIds(it) }) { parts -> parts.flatMap { it } })
                             .flowOn(Dispatchers.IO)
-                            .map { songs ->
-                                songs.filter {
-                                    downloads[it.id]?.state == Download.STATE_COMPLETED
-                                }
-                            }
                             .map { songs ->
                                 when (songSortType) {
                                     SongSortType.CREATE_DATE -> songs.sortedBy {
@@ -104,6 +105,7 @@ constructor(
                                     }
 
                                     SongSortType.PLAY_TIME -> songs.sortedBy { it.song.totalPlayTime }
+                                    SongSortType.CUSTOM -> songs
                                 }.reversed(descending).filterExplicit(hideExplicit)
                             }
                     }

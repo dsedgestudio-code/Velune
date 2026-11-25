@@ -159,7 +159,7 @@ object UpdateNotificationManager {
         )
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_velune_concept)
+            .setSmallIcon(R.drawable.ic_spectra_ghost)
             .setContentTitle(context.getString(R.string.update_notification_title))
             .setContentText(context.getString(R.string.update_notification_text, newVersion))
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)

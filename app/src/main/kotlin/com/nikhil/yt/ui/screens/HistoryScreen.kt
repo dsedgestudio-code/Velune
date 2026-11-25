@@ -10,15 +10,11 @@ package com.nikhil.yt.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.only
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -34,6 +30,7 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -65,7 +62,6 @@ import androidx.compose.ui.zIndex
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.nikhil.yt.constants.DisableBlurKey
-import com.nikhil.yt.innertube.models.WatchEndpoint
 import com.nikhil.yt.innertube.utils.parseCookieString
 import com.nikhil.yt.LocalDatabase
 import com.nikhil.yt.LocalPlayerAwareWindowInsets
@@ -151,7 +147,7 @@ fun HistoryScreen(
             DateAgo.Yesterday -> context.getString(R.string.yesterday)
             DateAgo.ThisWeek -> context.getString(R.string.this_week)
             DateAgo.LastWeek -> context.getString(R.string.last_week)
-            is DateAgo.Other -> dateAgo.date.format(DateTimeFormatter.ofPattern("yyyy/MM"))
+            is DateAgo.Other -> dateAgo.date.format(DateTimeFormatter.ofPattern("MMMM yyyy"))
         }
     }
 
@@ -203,6 +199,16 @@ fun HistoryScreen(
     }
 
     val lazyListState = rememberLazyListState()
+    // History loads in pages; fetch older plays as the list nears its end.
+    val nearEnd by remember {
+        derivedStateOf {
+            val info = lazyListState.layoutInfo
+            info.totalItemsCount > 0 && (info.visibleItemsInfo.lastOrNull()?.index ?: 0) >= info.totalItemsCount - 10
+        }
+    }
+    LaunchedEffect(nearEnd) {
+        if (nearEnd) viewModel.loadMoreEvents()
+    }
 
     val color1 = MaterialTheme.colorScheme.primary
     val color2 = MaterialTheme.colorScheme.secondary
@@ -332,19 +338,17 @@ fun HistoryScreen(
 
             if (historySource == HistorySource.REMOTE && isLoggedIn) {
                 filteredRemoteContent?.forEach { section ->
-                    stickyHeader {
+                    item {
                         NavigationTitle(
                             title = section.title,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color.Transparent)
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
 
-                    items(
+                    itemsIndexed(
                         items = section.songs,
-                        key = { "${section.title}_${it.id}_${section.songs.indexOf(it)}" }
-                    ) { song ->
+                        key = { index, song -> "${section.title}_${song.id}_$index" }
+                    ) { _, song ->
                         YouTubeListItem(
                             item = song,
                             isActive = song.id == mediaMetadata?.id,
@@ -363,7 +367,7 @@ fun HistoryScreen(
                                 ) {
                                     Icon(
                                         painter = painterResource(R.drawable.more_vert),
-                                        contentDescription = null
+                                        contentDescription = stringResource(R.string.more_options)
                                     )
                                 }
                             },
@@ -395,12 +399,10 @@ fun HistoryScreen(
                 }
             } else {
                 filteredEvents.forEach { (dateAgo, events) ->
-                    stickyHeader {
+                    item {
                         NavigationTitle(
                             title = dateAgoToString(dateAgo),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color.Transparent)
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
 
@@ -490,7 +492,8 @@ fun HistoryScreen(
                         playerConnection.playQueue(
                             ListQueue(
                                 title = context.getString(R.string.history),
-                                items = songs.map { it.toMediaItem() }.shuffled()
+                                items = songs.map { it.toMediaItem() },
+                                shuffle = true
                             )
                         )
                     }
@@ -498,7 +501,8 @@ fun HistoryScreen(
                     playerConnection.playQueue(
                         ListQueue(
                             title = context.getString(R.string.history),
-                            items = allWrappedItems.map { it.item.song.toMediaItem() }.shuffled()
+                            items = allWrappedItems.map { it.item.song.toMediaItem() },
+                            shuffle = true
                         )
                     )
                 }

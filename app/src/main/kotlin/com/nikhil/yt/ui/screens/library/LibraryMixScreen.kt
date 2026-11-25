@@ -388,7 +388,7 @@ fun LibraryMixScreen(
                 ) {
                     Icon(
                         painter = painterResource(if (reorderEnabled) R.drawable.lock_open else R.drawable.lock),
-                        contentDescription = null,
+                        contentDescription = stringResource(if (reorderEnabled) R.string.reorder_lock else R.string.reorder_unlock),
                     )
                 }
             }
@@ -407,7 +407,7 @@ fun LibraryMixScreen(
                             LibraryViewType.GRID -> R.drawable.grid_view
                         },
                     ),
-                    contentDescription = null,
+                    contentDescription = stringResource(if (viewType == LibraryViewType.LIST) R.string.switch_to_grid else R.string.switch_to_list),
                 )
             }
         }

@@ -8,29 +8,19 @@
 
 package com.nikhil.yt.ui.screens
 
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -40,7 +30,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -58,21 +47,17 @@ import com.nikhil.yt.playback.queues.ListQueue
 import com.nikhil.yt.playback.queues.YouTubeQueue
 import com.nikhil.yt.ui.component.ChoiceChipsRow
 import com.nikhil.yt.ui.component.HideOnScrollFAB
-import com.nikhil.yt.ui.component.IconButton
 import com.nikhil.yt.ui.component.LocalAlbumsGrid
 import com.nikhil.yt.ui.component.LocalArtistsGrid
 import com.nikhil.yt.ui.component.LocalMenuState
-import com.nikhil.yt.ui.component.LocalSongsGrid
 import com.nikhil.yt.ui.component.NavigationTitle
 import com.nikhil.yt.ui.menu.AlbumMenu
 import com.nikhil.yt.ui.menu.ArtistMenu
 import com.nikhil.yt.ui.menu.SongMenu
-import com.nikhil.yt.ui.utils.backToMain
 import com.nikhil.yt.utils.joinByBullet
 import com.nikhil.yt.utils.makeTimeString
 import com.nikhil.yt.utils.rememberPreference
 import com.nikhil.yt.constants.DisableBlurKey
-import com.nikhil.yt.ui.component.SongListItem
 import com.nikhil.yt.ui.component.ListItem
 import com.nikhil.yt.ui.component.ItemThumbnail
 import androidx.compose.foundation.layout.Arrangement
@@ -80,8 +65,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.shape.GenericShape
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.times
 import kotlin.math.cos
 import kotlin.math.sin
@@ -94,11 +77,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.zIndex
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBars
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -106,14 +86,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import coil3.compose.AsyncImage
-import com.nikhil.yt.constants.AppBarHeight
 import com.nikhil.yt.db.entities.Artist
 import com.nikhil.yt.db.entities.Song
 import com.nikhil.yt.db.entities.SongWithStats
 import com.nikhil.yt.viewmodels.StatsViewModel
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import java.time.temporal.ChronoUnit
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -390,6 +368,9 @@ fun StatsScreen(
                     topSong = mostPlayedSongsStats.firstOrNull(),
                     topSongEntity = mostPlayedSongs.firstOrNull(),
                     navController = navController,
+                    onPlaySong = { song ->
+                        playerConnection.playQueue(YouTubeQueue.radio(song.toMediaMetadata()))
+                    },
                 )
             }
 
@@ -400,7 +381,7 @@ fun StatsScreen(
                         artists = mostPlayedArtists.take(5), // Top 5 artists for the chart
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(16.dp)
+                            .padding(horizontal = 20.dp, vertical = 16.dp)
                             .animateItem()
                     )
                     Spacer(modifier = Modifier.size(16.dp))
@@ -587,7 +568,8 @@ fun StatsScreen(
                     playerConnection.playQueue(
                         ListQueue(
                             title = context.getString(R.string.most_played_songs),
-                            items = mostPlayedSongs.map { it.toMediaMetadata().toMediaItem() }.shuffled()
+                            items = mostPlayedSongs.map { it.toMediaMetadata().toMediaItem() },
+                            shuffle = true
                         )
                     )
                 }
@@ -641,15 +623,16 @@ fun ArtistPieChart(
         // Text Info
         Column {
             Text(
-                text = "Total Time Listened",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.secondary
+                text = "Total time listened",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
                 text = makeTimeString(totalTime),
-                style = MaterialTheme.typography.displayMedium,
+                style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
             )
         }
     }
@@ -692,19 +675,20 @@ fun StatsHighlightsSection(
     topArtist: Artist?,
     topSong: SongWithStats?,
     topSongEntity: Song?,
-    navController: NavController
+    navController: NavController,
+    onPlaySong: (Song) -> Unit,
 ) {
     if (topArtist == null && topSong == null) return
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         if (topArtist != null) {
             StatsHighlightCard(
-                title = "Your Favourite Artist",
+                title = "Your favourite artist",
                 mainText = topArtist.artist.name,
                 subText = "${topArtist.songCount} songs played • ${makeTimeString(topArtist.timeListened?.toLong())}",
                 imageUrl = topArtist.artist.thumbnailUrl,
@@ -714,11 +698,11 @@ fun StatsHighlightsSection(
 
         if (topSong != null && topSongEntity != null) {
             StatsHighlightCard(
-                title = "Your Favourite Song",
+                title = "Your favourite song",
                 mainText = topSong.title,
                 subText = "${topSong.songCountListened} plays • ${makeTimeString(topSong.timeListened)}",
                 imageUrl = topSong.thumbnailUrl,
-                onClick = { /* Navigate to player or something? For now just no-op or maybe play? */ }
+                onClick = { onPlaySong(topSongEntity) }
             )
         }
     }
@@ -736,9 +720,9 @@ fun StatsHighlightCard(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
         )
     ) {
         Row(
@@ -753,15 +737,15 @@ fun StatsHighlightCard(
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
-                    .size(80.dp)
+                    .size(64.dp)
                     .clip(CircleShape)
             )
 
             Column {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
                     text = mainText,

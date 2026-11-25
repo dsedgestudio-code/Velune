@@ -62,6 +62,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
@@ -91,7 +93,6 @@ import me.saket.squiggles.SquigglySlider
 import com.nikhil.yt.LocalPlayerConnection
 import com.nikhil.yt.R
 import com.nikhil.yt.constants.PlayerBackgroundStyle
-import com.nikhil.yt.constants.PlayerButtonsStyle
 import com.nikhil.yt.constants.PlayerDesignStyle
 import com.nikhil.yt.constants.PlayerHorizontalPadding
 import com.nikhil.yt.constants.SliderStyle
@@ -103,6 +104,7 @@ import com.nikhil.yt.ui.component.BottomSheetPageState
 import com.nikhil.yt.ui.component.BottomSheetState
 import com.nikhil.yt.ui.component.MenuState
 import com.nikhil.yt.ui.component.PlayerSliderTrack
+import com.nikhil.yt.ui.component.WaveformSlider
 import com.nikhil.yt.ui.component.ResizableIconButton
 import com.nikhil.yt.ui.menu.PlayerMenu
 import com.nikhil.yt.ui.theme.PlayerBackgroundColorUtils
@@ -118,6 +120,21 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
+
+/** Small dot under a toggle icon: shows "on" by shape, not only by opacity (readable in sunlight). */
+@Composable
+private fun androidx.compose.foundation.layout.BoxScope.ActiveDot(visible: Boolean, color: Color) {
+    val dotAlpha by androidx.compose.animation.core.animateFloatAsState(if (visible) 1f else 0f, label = "activeDot")
+    Box(
+        Modifier
+            .align(Alignment.BottomCenter)
+            .padding(bottom = 6.dp)
+            .size(4.dp)
+            .alpha(dotAlpha)
+            .clip(RoundedCornerShape(50))
+            .background(color)
+    )
+}
 
 @Composable
 fun PlayerTitleSection(
@@ -135,7 +152,7 @@ fun PlayerTitleSection(
     ) { title ->
         Text(
             text = title,
-            style = MaterialTheme.typography.titleLarge,
+            style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -172,7 +189,7 @@ fun PlayerTitleSection(
         mediaMetadata.artists.forEachIndexed { index, artist ->
             val tag = "artist_${artist.id.orEmpty()}"
             pushStringAnnotation(tag = tag, annotation = artist.id.orEmpty())
-            withStyle(SpanStyle(color = textBackgroundColor, fontSize = 16.sp)) {
+            withStyle(SpanStyle(color = textBackgroundColor.copy(alpha = 0.7f), fontSize = 15.sp)) {
                 append(artist.name)
             }
             pop()
@@ -180,10 +197,10 @@ fun PlayerTitleSection(
         }
     }
 
+    // No marquee on the artist line: scrolling the whole row cut names apart mid-word.
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .basicMarquee()
             .padding(end = 12.dp)
     ) {
         var layoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
@@ -322,13 +339,17 @@ fun PlayerTopActions(
 
         PlayerDesignStyle.V3, PlayerDesignStyle.V5 -> {
             Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(0.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(50))
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "Share"
+                        }
                         .clickable {
                             val intent = Intent().apply {
                                 action = Intent.ACTION_SEND
@@ -351,8 +372,13 @@ fun PlayerTopActions(
                 }
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(50))
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "Like"
+                            stateDescription = if (currentSongLiked) "Liked" else "Not liked"
+                        }
                         .clickable { playerConnection.toggleLike() },
                     contentAlignment = Alignment.Center
                 ) {
@@ -567,6 +593,20 @@ fun PlayerSlider(
     )
 }
 
+/** The current song's artwork colours, shared by the player's backdrop and its waveform. */
+object ArtworkPalette {
+    var colors by mutableStateOf<List<Color>>(emptyList())
+}
+
+/** A cover colour made bright enough to read on the dark aura, without turning neon. */
+private fun waveformTone(color: Color): Color {
+    val hsv = FloatArray(3)
+    android.graphics.Color.colorToHSV(color.toArgb(), hsv)
+    hsv[1] = if (hsv[1] < 0.1f) hsv[1] else hsv[1].coerceIn(0.35f, 0.72f)
+    hsv[2] = 0.96f
+    return Color(android.graphics.Color.HSVToColor(hsv))
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StyledPlaybackSlider(
@@ -655,6 +695,35 @@ fun StyledPlaybackSlider(
                         trackHeight = 3.dp
                     )
                 },
+                modifier = modifier
+            )
+        }
+
+        SliderStyle.Waveform -> {
+            // The song's own colours: played bars run from the cover's main colour into its second one,
+            // and the playhead glows in between. Falls back to the theme while the cover is loading.
+            val palette = ArtworkPalette.colors
+            val start by animateColorAsState(palette.getOrNull(0)?.let(::waveformTone) ?: activeColor, tween(700), label = "waveStart")
+            val end by animateColorAsState(
+                palette.getOrNull(1)?.let(::waveformTone) ?: androidx.compose.ui.graphics.lerp(activeColor, MaterialTheme.colorScheme.tertiary, 0.55f),
+                tween(700),
+                label = "waveEnd",
+            )
+            val mediaId = LocalPlayerConnection.current?.mediaMetadata?.collectAsState()?.value?.id
+            val learned by com.nikhil.yt.playback.WaveformStore.current.collectAsState()
+            val liveLevel = com.nikhil.yt.playback.AudioLevelMeter.level.collectAsState()
+            WaveformSlider(
+                value = value,
+                valueRange = valueRange,
+                onValueChange = onValueChange,
+                onValueChangeFinished = onValueChangeFinished,
+                activeColor = start,
+                activeColorEnd = end,
+                inactiveColor = androidx.compose.ui.graphics.lerp(activeColor, start, 0.35f).copy(alpha = 0.18f),
+                shape = learned?.takeIf { it.first == mediaId }?.second,
+                liveLevel = liveLevel,
+                isPlaying = isPlaying,
+                revealKey = mediaId,
                 modifier = modifier
             )
         }
@@ -825,8 +894,8 @@ fun PlayerPlaybackControls(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(40.dp)
-                            .clip(RoundedCornerShape(10.dp))
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(50))
                             .semantics {
                                 role = Role.Button
                                 contentDescription = "Shuffle"
@@ -845,13 +914,13 @@ fun PlayerPlaybackControls(
                             ),
                             modifier = Modifier.size(22.dp)
                         )
+                        ActiveDot(visible = shuffleModeEnabled, color = textBackgroundColor)
                     }
 
                     Box(
                         modifier = Modifier
-                            .size(52.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(textBackgroundColor.copy(alpha = 0.08f))
+                            .size(60.dp)
+                            .clip(RoundedCornerShape(50))
                             .clickable(enabled = canSkipPrevious) {
                                 playerConnection.seekToPrevious()
                             },
@@ -860,15 +929,15 @@ fun PlayerPlaybackControls(
                         Icon(
                             painter = painterResource(R.drawable.skip_previous),
                             contentDescription = "Previous",
-                            tint = textBackgroundColor.copy(alpha = if (canSkipPrevious) 0.9f else 0.4f),
-                            modifier = Modifier.size(26.dp)
+                            tint = textBackgroundColor.copy(alpha = if (canSkipPrevious) 0.85f else 0.3f),
+                            modifier = Modifier.size(28.dp)
                         )
                     }
 
                     Box(
                         modifier = Modifier
-                            .size(70.dp)
-                            .clip(RoundedCornerShape(50))
+                            .size(78.dp)
+                            .clip(RoundedCornerShape(playPauseRoundness))
                             .background(textBackgroundColor)
                             .clickable {
                                 if (playbackState == STATE_ENDED) {
@@ -881,7 +950,7 @@ fun PlayerPlaybackControls(
                         contentAlignment = Alignment.Center
                     ) {
                         if (isLoading) {
-                            VeluneLoader(size = 32.dp)
+                            VeluneLoader(size = 36.dp)
                         } else {
                             Icon(
                                 painter = painterResource(
@@ -904,9 +973,8 @@ fun PlayerPlaybackControls(
 
                     Box(
                         modifier = Modifier
-                            .size(52.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(textBackgroundColor.copy(alpha = 0.08f))
+                            .size(60.dp)
+                            .clip(RoundedCornerShape(50))
                             .clickable(enabled = canSkipNext) {
                                 playerConnection.seekToNext()
                             },
@@ -915,15 +983,15 @@ fun PlayerPlaybackControls(
                         Icon(
                             painter = painterResource(R.drawable.skip_next),
                             contentDescription = "Next",
-                            tint = textBackgroundColor.copy(alpha = if (canSkipNext) 0.9f else 0.4f),
-                            modifier = Modifier.size(26.dp)
+                            tint = textBackgroundColor.copy(alpha = if (canSkipNext) 0.85f else 0.3f),
+                            modifier = Modifier.size(28.dp)
                         )
                     }
 
                     Box(
                         modifier = Modifier
-                            .size(40.dp)
-                            .clip(RoundedCornerShape(10.dp))
+                            .size(48.dp)
+                            .clip(RoundedCornerShape(50))
                             .semantics {
                                 role = Role.Button
                                 contentDescription = "Repeat"
@@ -951,6 +1019,7 @@ fun PlayerPlaybackControls(
                             ),
                             modifier = Modifier.size(22.dp)
                         )
+                        ActiveDot(visible = repeatMode != Player.REPEAT_MODE_OFF, color = textBackgroundColor)
                     }
                 }
             }
@@ -1370,7 +1439,7 @@ fun PlayerControlsContent(
         )
     }
 
-    Spacer(Modifier.height(12.dp))
+    Spacer(Modifier.height(20.dp))
 
     PlayerSlider(
         sliderStyle = sliderStyle,
@@ -1383,7 +1452,7 @@ fun PlayerControlsContent(
         onValueChangeFinished = onSliderValueChangeFinished
     )
 
-    Spacer(Modifier.height(4.dp))
+    Spacer(Modifier.height(2.dp))
 
     PlayerTimeLabel(
         sliderPosition = sliderPosition,
@@ -1392,7 +1461,7 @@ fun PlayerControlsContent(
         textBackgroundColor = textBackgroundColor
     )
 
-    Spacer(Modifier.height(12.dp))
+    Spacer(Modifier.height(24.dp))
 
     PlayerPlaybackControls(
         playerDesignStyle = playerDesignStyle,
@@ -1505,23 +1574,7 @@ fun PlayerBackground(
                     },
                     label = ""
                 ) { colors ->
-                    if (colors.isNotEmpty()) {
-                        val baseColor = PlayerBackgroundColorUtils.ensureComfortableColor(colors.first())
-                        val gradientStops = PlayerBackgroundColorUtils.buildColoringStops(baseColor)
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            Box(modifier = Modifier.fillMaxSize().background(baseColor))
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(Brush.verticalGradient(colorStops = gradientStops))
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(Color.Black.copy(alpha = 0.25f))
-                            )
-                        }
-                    }
+                    if (colors.isNotEmpty()) ArtworkAura(colors)
                 }
             }
 

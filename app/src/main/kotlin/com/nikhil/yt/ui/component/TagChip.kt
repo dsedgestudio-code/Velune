@@ -52,7 +52,7 @@ fun PlaylistTagChips(
     onTagClick: ((TagEntity) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val tags by database.playlistTags(playlistId).collectAsState(initial = emptyList())
+    val tags by remember(playlistId) { database.playlistTags(playlistId) }.collectAsState(initial = emptyList())
 
     if (tags.isNotEmpty()) {
         FlowRow(
@@ -180,7 +180,7 @@ fun TagsFilterChips(
     onTagToggle: (TagEntity) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val allTags by database.allTags().collectAsState(initial = emptyList())
+    val allTags by remember { database.allTags() }.collectAsState(initial = emptyList())
 
     if (allTags.isNotEmpty()) {
         FlowRow(

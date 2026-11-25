@@ -44,9 +44,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.core.net.toUri
 import androidx.media3.exoplayer.offline.Download
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import com.nikhil.yt.innertube.YouTube
 import com.nikhil.yt.LocalDatabase
@@ -85,7 +83,7 @@ fun PlaylistMenu(
     val database = LocalDatabase.current
     val downloadUtil = LocalDownloadUtil.current
     val playerConnection = LocalPlayerConnection.current ?: return
-    val dbPlaylist by database.playlist(playlist.id).collectAsState(initial = playlist)
+    val dbPlaylist by remember(playlist.id) { database.playlist(playlist.id) }.collectAsState(initial = playlist)
     var songs by remember {
         mutableStateOf(emptyList<Song>())
     }
@@ -342,7 +340,8 @@ fun PlaylistMenu(
                                 playerConnection.playQueue(
                                     ListQueue(
                                         title = playlist.playlist.name,
-                                        items = songs.shuffled().map(Song::toMediaItem)
+                                        items = songs.map(Song::toMediaItem),
+                                        shuffle = true
                                     )
                                 )
                             }
@@ -509,18 +508,7 @@ fun PlaylistMenu(
                             },
                             modifier = Modifier.clickable {
                                 songs.forEach { song ->
-                                    val downloadRequest =
-                                        DownloadRequest
-                                            .Builder(song.id, song.id.toUri())
-                                            .setCustomCacheKey(song.id)
-                                            .setData(song.song.title.toByteArray())
-                                            .build()
-                                    DownloadService.sendAddDownload(
-                                        context,
-                                        ExoDownloadService::class.java,
-                                        downloadRequest,
-                                        false,
-                                    )
+                                    ExoDownloadService.download(context, song.id, song.song.title)
                                 }
                             }
                         )

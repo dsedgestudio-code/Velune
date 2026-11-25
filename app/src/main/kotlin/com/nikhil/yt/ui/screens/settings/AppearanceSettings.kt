@@ -162,7 +162,7 @@ fun AppearanceSettings(
     )
     val (cropThumbnailToSquare, onCropThumbnailToSquareChange) = rememberPreference(
         CropThumbnailToSquareKey,
-        defaultValue = false
+        defaultValue = true
     )
     val (playerBackground, onPlayerBackgroundChange) =
         rememberEnumPreference(
@@ -196,7 +196,7 @@ fun AppearanceSettings(
 
     val (sliderStyle, onSliderStyleChange) = rememberEnumPreference(
         SliderStyleKey,
-        defaultValue = SliderStyle.Circular
+        defaultValue = SliderStyle.Waveform
     )
     val (swipeThumbnail, onSwipeThumbnailChange) = rememberPreference(
         SwipeThumbnailKey,
@@ -274,7 +274,8 @@ fun AppearanceSettings(
                 SliderStyle.Wavy,
                 SliderStyle.Thick,
                 SliderStyle.Circular,
-                SliderStyle.Simple
+                SliderStyle.Simple,
+                SliderStyle.Waveform
             )
         }
         DefaultDialog(
@@ -979,6 +980,7 @@ private fun sliderStyleLabel(sliderStyle: SliderStyle): String {
         SliderStyle.Thick -> stringResource(R.string.slider_style_thick)
         SliderStyle.Circular -> stringResource(R.string.slider_style_circular)
         SliderStyle.Simple -> stringResource(R.string.slider_style_simple)
+        SliderStyle.Waveform -> "Waveform"
     }
 }
 

@@ -64,7 +64,7 @@ fun TagsManagementDialog(
     database: MusicDatabase,
     onDismiss: () -> Unit
 ) {
-    val allTags by database.allTags().collectAsState(initial = emptyList())
+    val allTags by remember { database.allTags() }.collectAsState(initial = emptyList())
     
     var showAddTagDialog by remember { mutableStateOf(false) }
     var tagToEdit by remember { mutableStateOf<TagEntity?>(null) }

@@ -16,12 +16,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.nikhil.yt.ui.screens.Screens
 
 @Composable
@@ -29,20 +29,17 @@ fun FluidSlidingNavigationBar(
     modifier: Modifier = Modifier,
     items: List<Screens>,
     currentRoute: String,
-    pureBlack: Boolean,
     onTabSelected: (Screens) -> Unit
 ) {
     val selectedIndex = items.indexOfFirst { it.route == currentRoute }.coerceAtLeast(0)
 
 
-    val barColor = if (pureBlack) Color.Black else MaterialTheme.colorScheme.surfaceContainer
-
+    // Same raised surface as the mini player above it, so the two read as one floating unit.
     BoxWithConstraints(
         modifier = modifier
-            .clip(RoundedCornerShape(28.dp))
             .fillMaxWidth()
-            .height(80.dp)
-            .background(barColor)
+            .clip(RoundedCornerShape(24.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
     ) {
         val tabWidth = maxWidth / items.size
 
@@ -81,6 +78,7 @@ fun FluidSlidingNavigationBar(
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
+                            role = Role.Tab,
                             onClick = { onTabSelected(item) }
                         ),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -98,7 +96,8 @@ fun FluidSlidingNavigationBar(
 
                     Text(
                         text = stringResource(id = item.titleId),
-                        fontSize = 12.sp,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         color = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant

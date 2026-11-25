@@ -21,6 +21,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -29,6 +30,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
@@ -62,6 +64,7 @@ fun <E> ChipsRow(
     modifier: Modifier = Modifier,
     containerColor: Color = MaterialTheme.colorScheme.surfaceContainer,
     icons: Map<E, Int> = emptyMap(),
+    leading: @Composable () -> Unit = {},
 ) {
     Row(
         modifier =
@@ -69,42 +72,52 @@ fun <E> ChipsRow(
             .fillMaxWidth()
             .padding(vertical = 8.dp)
             .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Spacer(Modifier.width(12.dp))
-
+        leading()
         chips.forEach { (value, label) ->
-            val isSelected = currentValue == value
             val iconRes = icons[value]
-
             FilterChip(
-                selected = isSelected,
+                selected = currentValue == value,
                 onClick = { onValueUpdate(value) },
                 label = { Text(label) },
-                leadingIcon = {
-                    if (isSelected) {
-                        Icon(
-                            painter = painterResource(R.drawable.done),
-                            contentDescription = null,
-                            modifier = Modifier.size(FilterChipDefaults.IconSize),
-                        )
-                    } else if (iconRes != null) {
-                        Icon(
-                            painter = painterResource(iconRes),
-                            contentDescription = null,
-                            modifier = Modifier.size(FilterChipDefaults.IconSize),
-                        )
-                    }
+                leadingIcon = iconRes?.let {
+                    { Icon(painterResource(it), null, Modifier.size(FilterChipDefaults.IconSize)) }
                 },
-                shape = RoundedCornerShape(16.dp),
+                shape = CircleShape,
                 border = null,
-                colors = FilterChipDefaults.filterChipColors(
-                    containerColor = containerColor,
-                ),
+                colors = spectraChipColors(containerColor),
             )
-
-            Spacer(Modifier.width(8.dp))
         }
+        Spacer(Modifier.width(12.dp))
     }
+}
+
+/** Selected chips invert to a solid onSurface pill; unselected ones sit quietly on [containerColor]. */
+@Composable
+fun spectraChipColors(containerColor: Color = MaterialTheme.colorScheme.surfaceContainer) =
+    FilterChipDefaults.filterChipColors(
+        containerColor = containerColor,
+        labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        iconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        selectedContainerColor = MaterialTheme.colorScheme.onSurface,
+        selectedLabelColor = MaterialTheme.colorScheme.surface,
+        selectedLeadingIconColor = MaterialTheme.colorScheme.surface,
+    )
+
+/** The open library category; tapping it returns to the library overview. */
+@Composable
+fun LibraryCategoryChip(label: String, onClose: () -> Unit) {
+    FilterChip(
+        selected = true,
+        onClick = onClose,
+        label = { Text(label) },
+        leadingIcon = { Icon(painterResource(R.drawable.close), stringResource(R.string.back_button_desc), Modifier.size(FilterChipDefaults.IconSize)) },
+        shape = CircleShape,
+        border = null,
+        colors = spectraChipColors(),
+    )
 }
 
 @SuppressLint("UnusedContentLambdaTargetStateParameter")
@@ -210,11 +223,9 @@ fun <Int> ChoiceChipsRow(
                     FilterChip(
                         label = { Text(label) },
                         selected = currentValue == value,
-                        colors = FilterChipDefaults.filterChipColors(
-                            containerColor = containerColor,
-                        ),
+                        colors = spectraChipColors(containerColor),
                         onClick = { onValueUpdate(value) },
-                        shape = RoundedCornerShape(16.dp),
+                        shape = CircleShape,
                         border = null
                     )
                 }

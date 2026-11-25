@@ -53,12 +53,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
@@ -219,10 +221,49 @@ fun BottomSheetPlayer(
     val automix by playerConnection.service.automixItems.collectAsState()
     val repeatMode by playerConnection.repeatMode.collectAsState()
 
+    // Turning on repeat-one asks for how long; afterwards repeat switches itself off.
+    var showRepeatForDialog by remember { mutableStateOf(false) }
+    var lastRepeatMode by remember { mutableIntStateOf(repeatMode) }
+    LaunchedEffect(repeatMode) {
+        if (repeatMode == androidx.media3.common.Player.REPEAT_MODE_ONE && lastRepeatMode != androidx.media3.common.Player.REPEAT_MODE_ONE) showRepeatForDialog = true
+        lastRepeatMode = repeatMode
+    }
+    if (showRepeatForDialog) {
+        AlertDialog(
+            onDismissRequest = { showRepeatForDialog = false },
+            icon = { Icon(painterResource(R.drawable.repeat_one), contentDescription = null) },
+            title = { Text(stringResource(R.string.repeat_for_title)) },
+            text = {
+                Column {
+                    listOf(15, 30, 60, 120).forEach { minutes ->
+                        TextButton(
+                            onClick = {
+                                playerConnection.service.repeatCurrentFor(minutes)
+                                showRepeatForDialog = false
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                if (minutes < 60) pluralStringResource(R.plurals.minute, minutes, minutes)
+                                else stringResource(R.string.repeat_for_hours, minutes / 60),
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showRepeatForDialog = false }) {
+                    Text(stringResource(R.string.repeat_until_off))
+                }
+            },
+        )
+    }
+
     val canSkipPrevious by playerConnection.canSkipPrevious.collectAsState()
     val canSkipNext by playerConnection.canSkipNext.collectAsState()
 
-    val sliderStyle by rememberEnumPreference(SliderStyleKey, SliderStyle.Circular)
+    val sliderStyle by rememberEnumPreference(SliderStyleKey, SliderStyle.Waveform)
 
     var position by rememberSaveable(playbackState) {
         mutableLongStateOf(playerConnection.player.currentPosition)
@@ -239,6 +280,7 @@ fun BottomSheetPlayer(
     var gradientColors by remember {
         mutableStateOf<List<Color>>(emptyList())
     }
+    SideEffect { ArtworkPalette.colors = gradientColors }
 
     var previousThumbnailUrl by remember { mutableStateOf<String?>(null) }
     var previousGradientColors by remember { mutableStateOf<List<Color>>(emptyList()) }

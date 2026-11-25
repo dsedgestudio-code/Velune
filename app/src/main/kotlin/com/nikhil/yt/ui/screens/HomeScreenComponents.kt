@@ -8,8 +8,9 @@
 
 package com.nikhil.yt.ui.screens
 
+import androidx.compose.ui.text.font.FontWeight
+import com.nikhil.yt.ui.component.ArtworkSpectrum
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -132,14 +133,15 @@ fun QuickPicksSection(
 ) {
     val distinctQuickPicks = remember(quickPicks) { quickPicks.distinctBy { it.id } }
 
+    Column(modifier) {
     HorizontalUncontainedCarousel(
         state = rememberCarouselState { distinctQuickPicks.size },
-        itemWidth = 250.dp,
-        itemSpacing = 8.dp,
-        contentPadding = PaddingValues(horizontal = 16.dp),
-        modifier = modifier
+        itemWidth = 300.dp,
+        itemSpacing = 10.dp,
+        contentPadding = PaddingValues(horizontal = 20.dp),
+        modifier = Modifier
             .fillMaxWidth()
-            .height(290.dp)
+            .height(300.dp)
     ) { index ->
         val song = distinctQuickPicks[index]
         val isActive = song.id == mediaMetadata?.id
@@ -147,11 +149,7 @@ fun QuickPicksSection(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .maskClip(MaterialTheme.shapes.extraLarge)
-                .maskBorder(
-                    BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                    MaterialTheme.shapes.extraLarge
-                )
+                .maskClip(RoundedCornerShape(24.dp))
                 .combinedClickable(
                     onClick = {
                         if (isActive) {
@@ -187,57 +185,60 @@ fun QuickPicksSection(
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                Color.Transparent,
-                                Color.Black.copy(alpha = 0.7f)
-                            )
+                            0.45f to Color.Transparent,
+                            1f to Color.Black.copy(alpha = 0.88f)
                         )
                     )
             )
 
-            if (isActive && isPlaying) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(12.dp)
-                        .size(32.dp)
-                        .background(
-                            MaterialTheme.colorScheme.primary,
-                            CircleShape
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        painter = painterResource(R.drawable.volume_up),
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(16.dp)
+                    .padding(start = 18.dp, end = 80.dp, bottom = 18.dp)
             ) {
                 Text(
                     text = song.song.title,
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
                     color = Color.White,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = song.artists.joinToString { it.name },
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White.copy(alpha = 0.7f),
+                    color = Color.White.copy(alpha = 0.78f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
+
+            // An explicit play control: the old speaker badge only appeared once already playing.
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp)
+                    .size(52.dp)
+                    .clip(CircleShape)
+                    .background(Color.White),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(if (isActive && isPlaying) R.drawable.pause else R.drawable.play),
+                    contentDescription = if (isActive && isPlaying) "Pause" else "Play",
+                    tint = Color.Black,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
         }
+    }
+    ArtworkSpectrum(
+        imageUrl = (distinctQuickPicks.firstOrNull { it.id == mediaMetadata?.id } ?: distinctQuickPicks.firstOrNull())
+            ?.song?.thumbnailUrl,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, end = 20.dp, top = 14.dp)
+    )
     }
 }
 

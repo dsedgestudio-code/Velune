@@ -177,8 +177,7 @@ abstract class InternalDatabase : RoomDatabase() {
                         *universalMigrations,
                     )
                     .addCallback(DatabaseCallback())
-                    .fallbackToDestructiveMigration()
-                    .fallbackToDestructiveMigrationOnDowngrade()
+                    // No destructive fallback: a missing migration must fail loudly, never silently wipe the library.
                     .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
                     .setTransactionExecutor(java.util.concurrent.Executors.newFixedThreadPool(4))
                     .setQueryExecutor(java.util.concurrent.Executors.newFixedThreadPool(4))
@@ -209,7 +208,12 @@ abstract class InternalDatabase : RoomDatabase() {
                 runCatching { db.openHelper.writableDatabase }.getOrElse { openError ->
                     Log.e(TAG, "Database still failed to open after schema repair=$repaired, recreating database", openError)
                     runCatching { db.close() }
-                    runCatching { context.deleteDatabase(DB_NAME) }
+                    // Keep the unreadable library for manual recovery instead of deleting it.
+                    val stamp = System.currentTimeMillis()
+                    listOf("", "-wal", "-shm").forEach { suffix ->
+                        val file = context.getDatabasePath(DB_NAME + suffix)
+                        if (file.exists()) file.renameTo(java.io.File(file.parentFile, "$DB_NAME.broken-$stamp$suffix"))
+                    }
                     db = build()
                     db.openHelper.writableDatabase
                 }

@@ -39,3 +39,14 @@ captures/
 *.keystore
 *.properties
 !gradle.properties
+!gradle/wrapper/gradle-wrapper.properties
+!app/src/main/res/resources.properties
+
+# JVM crash dumps and local screenshots
+hs_err_pid*
+replay_pid*
+/screenshot*.png
+
+# design scratch (mocks, browser profiles, screenshots)
+.impeccable/mocks/
+.impeccable/review/

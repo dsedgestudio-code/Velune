@@ -5,24 +5,26 @@
 
 package com.nikhil.yt.ui.screens.settings
 
+import androidx.compose.foundation.layout.Column
+import com.nikhil.yt.ui.component.PreferenceGroupTitle
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.layout.heightIn
+import androidx.annotation.DrawableRes
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import coil3.compose.AsyncImage
@@ -30,9 +32,6 @@ import com.nikhil.yt.BuildConfig
 import com.nikhil.yt.R
 import com.nikhil.yt.viewmodels.HomeViewModel
 import androidx.compose.ui.platform.LocalContext
-import com.nikhil.yt.App.Companion.forgetAccount
-import com.nikhil.yt.utils.rememberPreference
-import com.nikhil.yt.constants.InnerTubeCookieKey
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -44,287 +43,119 @@ fun VeluneSettingsScreen(
     val accountName by viewModel.accountName.collectAsState()
     val accountImageUrl by viewModel.accountImageUrl.collectAsState()
     val isLoggedIn = accountName != "Guest" && !accountName.isNullOrEmpty()
-    var showLogoutDialog by remember { mutableStateOf(false) }
-    val (innerTubeCookie, onInnerTubeCookieChange) = rememberPreference(InnerTubeCookieKey, "")
+    fun go(route: String): () -> Unit = { navController.navigate(route) }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Settings", fontSize = 20.sp) },
+                title = { Text("Settings") },
                 navigationIcon = {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(
-                            painter = painterResource(R.drawable.arrow_back),
-                            contentDescription = "Back",
-                            modifier = Modifier.size(24.dp)
-                        )
+                        Icon(painterResource(R.drawable.arrow_back), contentDescription = "Back")
                     }
                 },
-
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background
-                )
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
-        containerColor = MaterialTheme.colorScheme.background
+        containerColor = MaterialTheme.colorScheme.background,
     ) { paddingValues ->
         LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(horizontal = 16.dp)
+            modifier = Modifier.fillMaxSize().padding(paddingValues),
         ) {
-
             item {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 16.dp, horizontal = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(60.dp)
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.5f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Image(
-                            painter = painterResource(id = R.drawable.ic_velune_concept),
-                            contentDescription = "Velune Logo",
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(12.dp)
-                        )
-                    }
+                    Image(
+                        painter = painterResource(R.drawable.ic_spectra_ghost),
+                        contentDescription = null,
+                        colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurface),
+                        modifier = Modifier.size(44.dp),
+                    )
                     Spacer(Modifier.width(16.dp))
                     Column {
+                        Text("Spectra", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                         Text(
-                            text = "Velune",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Normal
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = "v${BuildConfig.VERSION_NAME}",
+                            text = "Version ${BuildConfig.VERSION_NAME}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
             }
 
+            item { PreferenceGroupTitle("You") }
             item {
-                SettingsItemScreenshotStyle(
-                    icon = painterResource(R.drawable.palette),
-                    title = "Appearance",
-                    onClick = { navController.navigate("settings/appearance") }
+                SettingsRow(
+                    title = "Account",
+                    description = if (isLoggedIn) accountName.orEmpty() else "Sign in to sync your library",
+                    leading = {
+                        if (isLoggedIn && accountImageUrl != null) {
+                            AsyncImage(model = accountImageUrl, contentDescription = null, modifier = Modifier.size(24.dp).clip(CircleShape))
+                        } else {
+                            SettingsIcon(R.drawable.account)
+                        }
+                    },
+                    onClick = go("settings/account"),
                 )
             }
+            item { SettingsRow("Listen Together", "Share what you hear, live", { SettingsIcon(R.drawable.multi_user) }, go("settings/music_together")) }
 
-            item {
-                if (isLoggedIn) {
-                    SettingsItemAccountStyle(
-                        model = accountImageUrl,
-                        fallbackText = accountName?.firstOrNull()?.uppercase()?:"",
-                        title = "Account",
-                        onClick = { navController.navigate("settings/account") }
-                    )
-                } else {
-                    SettingsItemScreenshotStyle(
-                        icon = painterResource(R.drawable.account),
-                        title = "Account",
-                        onClick = { navController.navigate("settings/account") }
-                    )
-                }
-            }
+            item { PreferenceGroupTitle("Listening") }
+            item { SettingsRow("Player and audio", "Quality, equalizer, crossfade", { SettingsIcon(R.drawable.play) }, go("settings/player")) }
+            item { SettingsRow("Appearance", "Theme, colours, player style", { SettingsIcon(R.drawable.palette) }, go("settings/appearance")) }
+            item { SettingsRow("Content", "Language, region, explicit songs", { SettingsIcon(R.drawable.language) }, go("settings/content")) }
 
-            item {
-                SettingsItemScreenshotStyle(
-                    icon = painterResource(R.drawable.multi_user),
-                    title = "Listen Together",
-                    onClick = { navController.navigate("settings/music_together") }
-                )
-            }
+            item { PreferenceGroupTitle("Connections") }
+            item { SettingsRow("Discord", "Show what you play on your profile", { SettingsIcon(R.drawable.discord) }, go("settings/discord")) }
+            item { SettingsRow("Integration", "Last.fm, ListenBrainz", { SettingsIcon(R.drawable.integration) }, go("settings/integration")) }
 
-            item {
-                SettingsItemScreenshotStyle(
-                    icon = painterResource(R.drawable.play),
-                    title = "Player and audio",
-                    onClick = { navController.navigate("settings/player") }
-                )
-            }
+            item { PreferenceGroupTitle("Your data") }
+            item { SettingsRow("Privacy", "History and search tracking", { SettingsIcon(R.drawable.security) }, go("settings/privacy")) }
+            item { SettingsRow("Storage", "Downloads and cache", { SettingsIcon(R.drawable.storage) }, go("settings/storage")) }
+            item { SettingsRow("Backup and restore", "Move your library to a new phone", { SettingsIcon(R.drawable.backup) }, go("settings/backup_restore")) }
 
-            item {
-                SettingsItemScreenshotStyle(
-                    icon = painterResource(R.drawable.language),
-                    title = "Content",
-                    onClick = { navController.navigate("settings/content") }
-                )
-            }
-
-            item {
-                SettingsItemScreenshotStyle(
-                    icon = painterResource(R.drawable.discord),
-                    title = "Discord",
-                    onClick = { navController.navigate("settings/discord") }
-                )
-            }
-
-            item {
-                SettingsItemScreenshotStyle(
-                    icon = painterResource(R.drawable.integration),
-                    title = "Integration",
-                    onClick = { navController.navigate("settings/integration") }
-                )
-            }
-
-            item {
-                SettingsItemScreenshotStyle(
-                    icon = painterResource(R.drawable.security),
-                    title = "Privacy",
-                    onClick = { navController.navigate("settings/privacy") }
-                )
-            }
-
-            item {
-                SettingsItemScreenshotStyle(
-                    icon = painterResource(R.drawable.storage),
-                    title = "Storage",
-                    onClick = { navController.navigate("settings/storage") }
-                )
-            }
-
-            item {
-                SettingsItemScreenshotStyle(
-                    icon = painterResource(R.drawable.backup),
-                    title = "Backup and restore",
-                    onClick = { navController.navigate("settings/backup_restore") }
-                )
-            }
-
-            item {
-                SettingsItemScreenshotStyle(
-                    icon = painterResource(R.drawable.info),
-                    title = "About",
-                    onClick = { navController.navigate("settings/about") }
-                )
-            }
-
+            item { Spacer(Modifier.height(8.dp)) }
+            item { SettingsRow("About", null, { SettingsIcon(R.drawable.info) }, go("settings/about")) }
             item { Spacer(Modifier.height(32.dp)) }
         }
-
-        if (showLogoutDialog) {
-            AlertDialog(
-                onDismissRequest = { showLogoutDialog = false },
-                title = { Text("Sign Out") },
-                text = { Text("Are you sure you want to sign out of your YouTube Music account?") },
-                confirmButton = {
-                    TextButton(onClick = {
-                        showLogoutDialog = false
-                        onInnerTubeCookieChange("")
-                        forgetAccount(context)
-                    }) {
-                        Text("Sign Out")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showLogoutDialog = false }) {
-                        Text("Cancel")
-                    }
-                }
-            )
-        }
     }
 }
 
 @Composable
-private fun SettingsItemScreenshotStyle(
-    icon: Painter,
-    title: String,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 30.dp, horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            painter = icon,
-            contentDescription = null,
-            modifier = Modifier.size(24.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(modifier = Modifier.width(20.dp))
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Normal,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        Spacer(modifier = Modifier.weight(1f))
-        Icon(
-            painter = painterResource(R.drawable.navigate_next),
-            contentDescription = null,
-            modifier = Modifier.size(24.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
+private fun SettingsIcon(@DrawableRes icon: Int) {
+    Icon(painterResource(icon), contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
 }
 
 @Composable
-private fun SettingsItemAccountStyle(
-    model: String?,
-    fallbackText: String,
+private fun SettingsRow(
     title: String,
-    onClick: () -> Unit
+    description: String?,
+    leading: @Composable () -> Unit,
+    onClick: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 64.dp)
             .clickable(onClick = onClick)
-            .padding(vertical = 22.dp, horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (model != null) {
-            AsyncImage(
-                model = model,
-                contentDescription = title,
-                modifier = Modifier
-                    .size(24.dp)
-                    .clip(CircleShape)
-            )
-        } else {
-            Box(
-                modifier = Modifier
-                    .size(24.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                contentAlignment = Alignment.Center
-            ) {
+        Box(Modifier.size(24.dp), contentAlignment = Alignment.Center) { leading() }
+        Spacer(Modifier.width(20.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
+            if (description != null) {
                 Text(
-                    text = fallbackText,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    fontWeight = FontWeight.Bold
+                    description,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
-        Spacer(modifier = Modifier.width(20.dp))
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Normal,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        Spacer(modifier = Modifier.weight(1f))
-        Icon(
-            painter = painterResource(R.drawable.navigate_next),
-            contentDescription = null,
-            modifier = Modifier.size(24.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }

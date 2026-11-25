@@ -11,7 +11,6 @@ package com.nikhil.yt.ui.screens.playlist
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,7 +27,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -63,13 +61,10 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -79,7 +74,6 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.zIndex
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.navigation.NavController
 import androidx.palette.graphics.Palette
@@ -98,7 +92,6 @@ import com.nikhil.yt.constants.HideExplicitKey
 import com.nikhil.yt.constants.SongSortDescendingKey
 import com.nikhil.yt.constants.SongSortType
 import com.nikhil.yt.constants.SongSortTypeKey
-import com.nikhil.yt.constants.ThumbnailCornerRadius
 import com.nikhil.yt.extensions.toMediaItem
 import com.nikhil.yt.extensions.togglePlayPause
 import com.nikhil.yt.playback.queues.ListQueue
@@ -106,8 +99,10 @@ import com.nikhil.yt.ui.component.DraggableScrollbar
 import com.nikhil.yt.ui.component.EmptyPlaceholder
 import com.nikhil.yt.ui.component.IconButton
 import com.nikhil.yt.ui.component.LocalMenuState
-import com.nikhil.yt.ui.component.SongListItem
 import com.nikhil.yt.ui.component.SortHeader
+import com.nikhil.yt.ui.component.rememberCustomSongOrder
+import com.nikhil.yt.ui.component.rememberSongReorderState
+import com.nikhil.yt.ui.component.reorderableSongItems
 import com.nikhil.yt.ui.menu.SelectionSongMenu
 import com.nikhil.yt.ui.menu.SongMenu
 import com.nikhil.yt.ui.theme.PlayerColorExtractor
@@ -128,7 +123,6 @@ fun CachePlaylistScreen(
     val context = LocalContext.current
     val menuState = LocalMenuState.current
     val playerConnection = LocalPlayerConnection.current ?: return
-    val haptic = LocalHapticFeedback.current
     val focusManager = LocalFocusManager.current
 
     val isPlaying by playerConnection.isPlaying.collectAsState()
@@ -143,6 +137,8 @@ fun CachePlaylistScreen(
     val hideExplicit by rememberPreference(key = HideExplicitKey, defaultValue = false)
     val (disableBlur) = rememberPreference(DisableBlurKey, false)
 
+    // Own key: this list used to share "order_DOWNLOADED" with the library's Downloaded filter.
+    val customOrder = rememberCustomSongOrder("order_cache")
     val wrappedSongs = remember(cachedSongs, sortType, sortDescending) {
         val sortedSongs = when (sortType) {
             SongSortType.CREATE_DATE -> cachedSongs.sortedBy { it.song.dateDownload ?: LocalDateTime.MIN }
@@ -151,16 +147,17 @@ fun CachePlaylistScreen(
                 song.artists.joinToString(separator = "") { artist -> artist.name }
             }
             SongSortType.PLAY_TIME -> cachedSongs.sortedBy { it.song.totalPlayTime }
-        }.let { if (sortDescending) it.reversed() else it }
-
-        sortedSongs.map { song -> ItemWrapper(song) }
-    }.toMutableStateList()
+            SongSortType.CUSTOM -> customOrder.sort(cachedSongs) { it.id }
+        }.let { if (sortType != SongSortType.CUSTOM && sortDescending) it.reversed() else it }
+        sortedSongs.map { ItemWrapper(it) }.toMutableStateList()
+    }
 
     var selection by remember { mutableStateOf(false) }
     var isSearching by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf(TextFieldValue()) }
     val focusRequester = remember { FocusRequester() }
     val lazyListState = rememberLazyListState()
+    val reorderableState = rememberSongReorderState(lazyListState, wrappedSongs, customOrder)
 
     LaunchedEffect(isSearching) {
         if (isSearching) {
@@ -502,7 +499,8 @@ fun CachePlaylistScreen(
                                         playerConnection.playQueue(
                                             ListQueue(
                                                 title = "Cache Songs",
-                                                items = filteredSongs.shuffled().map { it.item.toMediaItem() },
+                                                items = filteredSongs.map { it.item.toMediaItem() },
+                                                shuffle = true,
                                             )
                                         )
                                     },
@@ -566,6 +564,7 @@ fun CachePlaylistScreen(
                                         SongSortType.NAME -> R.string.sort_by_name
                                         SongSortType.ARTIST -> R.string.sort_by_artist
                                         SongSortType.PLAY_TIME -> R.string.sort_by_play_time
+                                        SongSortType.CUSTOM -> R.string.sort_by_custom
                                     }
                                 },
                                 modifier = Modifier.weight(1f),
@@ -574,63 +573,46 @@ fun CachePlaylistScreen(
                     }
                 }
 
-                // Song items
-                itemsIndexed(filteredSongs, key = { _, song -> song.item.id }) { index, songWrapper ->
-                    SongListItem(
-                        song = songWrapper.item,
-                        isActive = songWrapper.item.id == mediaMetadata?.id,
-                        isPlaying = isPlaying,
-                        isSelected = songWrapper.isSelected && selection,
-                        showInLibraryIcon = true,
-                        trailingContent = {
-                            androidx.compose.material3.IconButton(onClick = {
-                                menuState.show {
-                                    SongMenu(
-                                        originalSong = songWrapper.item,
-                                        navController = navController,
-                                        onDismiss = menuState::dismiss,
-                                        isFromCache = true,
-                                    )
-                                }
-                            }) {
-                                Icon(
-                                    painter = painterResource(R.drawable.more_vert),
-                                    contentDescription = null
+                reorderableSongItems(
+                    songs = filteredSongs,
+                    reorderState = reorderableState,
+                    canDrag = sortType == SongSortType.CUSTOM && !selection && !isSearching,
+                    selection = selection,
+                    activeId = mediaMetadata?.id,
+                    isPlaying = isPlaying,
+                    onClick = { songWrapper ->
+                        if (selection) {
+                            songWrapper.isSelected = !songWrapper.isSelected
+                        } else if (songWrapper.item.id == mediaMetadata?.id) {
+                            playerConnection.player.togglePlayPause()
+                        } else {
+                            playerConnection.playQueue(
+                                ListQueue(
+                                    title = "Cache Songs",
+                                    items = filteredSongs.map { it.item.toMediaItem() },
+                                    startIndex = filteredSongs.indexOf(songWrapper),
                                 )
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .combinedClickable(
-                                onClick = {
-                                    if (!selection) {
-                                        if (songWrapper.item.id == mediaMetadata?.id) {
-                                            playerConnection.player.togglePlayPause()
-                                        } else {
-                                            playerConnection.playQueue(
-                                                ListQueue(
-                                                    title = "Cache Songs",
-                                                    items = cachedSongs.map { it.toMediaItem() },
-                                                    startIndex = cachedSongs.indexOfFirst { it.id == songWrapper.item.id }
-                                                )
-                                            )
-                                        }
-                                    } else {
-                                        songWrapper.isSelected = !songWrapper.isSelected
-                                    }
-                                },
-                                onLongClick = {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    if (!selection) {
-                                        selection = true
-                                        wrappedSongs.forEach { it.isSelected = false }
-                                        songWrapper.isSelected = true
-                                    }
-                                }
                             )
-                            .animateItem()
-                    )
-                }
+                        }
+                    },
+                    onLongClick = { songWrapper ->
+                        if (!selection) {
+                            selection = true
+                            wrappedSongs.forEach { it.isSelected = false }
+                            songWrapper.isSelected = true
+                        }
+                    },
+                    onMenu = { song ->
+                        menuState.show {
+                            SongMenu(
+                                originalSong = song,
+                                navController = navController,
+                                onDismiss = menuState::dismiss,
+                                isFromCache = true,
+                            )
+                        }
+                    },
+                )
             }
         }
 

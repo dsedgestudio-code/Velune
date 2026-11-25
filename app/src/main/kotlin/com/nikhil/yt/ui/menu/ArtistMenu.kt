@@ -9,6 +9,7 @@
 package com.nikhil.yt.ui.menu
 
 import android.content.Intent
+import androidx.compose.runtime.remember
 import android.content.res.Configuration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
@@ -70,7 +71,7 @@ fun ArtistMenu(
     val context = LocalContext.current
     val database = LocalDatabase.current
     val playerConnection = LocalPlayerConnection.current ?: return
-    val artistState = database.artist(originalArtist.id).collectAsState(initial = originalArtist)
+    val artistState = remember(originalArtist.id) { database.artist(originalArtist.id) }.collectAsState(initial = originalArtist)
     val artist = artistState.value ?: originalArtist
 
     ArtistListItem(
@@ -123,6 +124,7 @@ fun ArtistMenu(
                                             ListQueue(
                                                 title = artist.artist.name,
                                                 items = songs,
+                                                shuffle = true,
                                             ),
                                         )
                                     }
@@ -149,7 +151,6 @@ fun ArtistMenu(
                                                 .artistSongs(artist.id, ArtistSongSortType.CREATE_DATE, true)
                                                 .first()
                                                 .map { it.toMediaItem() }
-                                                .shuffled()
                                         }
                                         playerConnection.playQueue(
                                             ListQueue(

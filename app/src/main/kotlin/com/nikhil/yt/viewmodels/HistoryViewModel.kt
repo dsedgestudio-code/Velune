@@ -18,7 +18,9 @@ import com.nikhil.yt.utils.reportException
 import com.nikhil.yt.db.MusicDatabase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -42,9 +44,17 @@ constructor(
 
     val historyPage = mutableStateOf<HistoryPage?>(null)
 
+    private val eventLimit = MutableStateFlow(HISTORY_PAGE_SIZE)
+
+    /** Loads the next page of older plays; called when the list nears its end. */
+    fun loadMoreEvents() {
+        eventLimit.value += HISTORY_PAGE_SIZE
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
     val events =
-        database
-            .events()
+        eventLimit
+            .flatMapLatest { limit -> database.recentEvents(limit) }
             .map { events ->
                 events
                     .groupBy {
@@ -107,3 +117,5 @@ sealed class DateAgo {
         override fun hashCode(): Int = date.hashCode()
     }
 }
+
+private const val HISTORY_PAGE_SIZE = 300

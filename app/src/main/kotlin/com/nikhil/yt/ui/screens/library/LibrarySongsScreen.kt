@@ -9,25 +9,19 @@
 package com.nikhil.yt.ui.screens.library
 
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.pullToRefresh
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
@@ -41,9 +35,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -55,7 +47,6 @@ import com.nikhil.yt.LocalPlayerAwareWindowInsets
 import com.nikhil.yt.LocalPlayerConnection
 import com.nikhil.yt.R
 import com.nikhil.yt.constants.CONTENT_TYPE_HEADER
-import com.nikhil.yt.constants.CONTENT_TYPE_SONG
 import com.nikhil.yt.constants.HideExplicitKey
 import com.nikhil.yt.constants.SongFilter
 import com.nikhil.yt.constants.SongFilterKey
@@ -67,10 +58,13 @@ import com.nikhil.yt.extensions.toMediaItem
 import com.nikhil.yt.extensions.togglePlayPause
 import com.nikhil.yt.playback.queues.ListQueue
 import com.nikhil.yt.ui.component.ChipsRow
+import com.nikhil.yt.ui.component.LibraryCategoryChip
 import com.nikhil.yt.ui.component.HideOnScrollFAB
 import com.nikhil.yt.ui.component.LocalMenuState
-import com.nikhil.yt.ui.component.SongListItem
 import com.nikhil.yt.ui.component.SortHeader
+import com.nikhil.yt.ui.component.rememberCustomSongOrder
+import com.nikhil.yt.ui.component.rememberSongReorderState
+import com.nikhil.yt.ui.component.reorderableSongItems
 import com.nikhil.yt.ui.menu.SelectionSongMenu
 import com.nikhil.yt.ui.menu.SongMenu
 import com.nikhil.yt.ui.utils.ItemWrapper
@@ -87,7 +81,6 @@ fun LibrarySongsScreen(
 ) {
     val context = LocalContext.current
     val menuState = LocalMenuState.current
-    val haptic = LocalHapticFeedback.current
     val playerConnection = LocalPlayerConnection.current ?: return
     val isPlaying by playerConnection.isPlaying.collectAsState()
     val mediaMetadata by playerConnection.mediaMetadata.collectAsState()
@@ -116,12 +109,17 @@ fun LibrarySongsScreen(
         }
     }
 
-    val wrappedSongs = songs.map { item -> ItemWrapper(item) }.toMutableList()
+    val customOrder = rememberCustomSongOrder("order_${filter.name}")
+    val wrappedSongs = remember(songs, sortType, filter) {
+        val ordered = if (sortType == SongSortType.CUSTOM) customOrder.sort(songs) { it.id } else songs
+        ordered.map { ItemWrapper(it) }.toMutableStateList()
+    }
     var selection by remember {
         mutableStateOf(false)
     }
 
     val lazyListState = rememberLazyListState()
+    val reorderableState = rememberSongReorderState(lazyListState, wrappedSongs, customOrder)
     val pullRefreshState = rememberPullToRefreshState()
 
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -153,21 +151,8 @@ fun LibrarySongsScreen(
                 contentType = CONTENT_TYPE_HEADER,
             ) {
                 Row {
-                    Spacer(Modifier.width(12.dp))
-                    FilterChip(
-                        label = { Text(stringResource(R.string.songs)) },
-                        selected = true,
-                        colors = FilterChipDefaults.filterChipColors(containerColor = MaterialTheme.colorScheme.surface),
-                        onClick = onDeselect,
-                        shape = RoundedCornerShape(16.dp),
-                        leadingIcon = {
-                            Icon(
-                                painter = painterResource(R.drawable.close),
-                                contentDescription = ""
-                            )
-                        },
-                    )
                     ChipsRow(
+                        leading = { LibraryCategoryChip(stringResource(R.string.songs), onDeselect) },
                         chips =
                         listOf(
                             SongFilter.LIKED to stringResource(R.string.filter_liked),
@@ -252,6 +237,7 @@ fun LibrarySongsScreen(
                                         SongSortType.NAME -> R.string.sort_by_name
                                         SongSortType.ARTIST -> R.string.sort_by_artist
                                         SongSortType.PLAY_TIME -> R.string.sort_by_play_time
+                                        SongSortType.CUSTOM -> R.string.sort_by_custom
                                     }
                                 },
                             )
@@ -277,71 +263,43 @@ fun LibrarySongsScreen(
             } else {
                 wrappedSongs
             }
-            itemsIndexed(
-                items = filteredSongs,
-                key = { _, item -> item.item.song.id },
-                contentType = { _, _ -> CONTENT_TYPE_SONG },
-            ) { index, songWrapper ->
-                SongListItem(
-                    song = songWrapper.item,
-                    showInLibraryIcon = true,
-                    isActive = songWrapper.item.id == mediaMetadata?.id,
-                    isPlaying = isPlaying,
-
-                    trailingContent = {
-                        IconButton(
-                            onClick = {
-                                menuState.show {
-                                    SongMenu(
-                                        originalSong = songWrapper.item,
-                                        navController = navController,
-                                        onDismiss = menuState::dismiss,
-                                    )
-                                }
-                            },
-                        ) {
-                            Icon(
-                                painter = painterResource(R.drawable.more_vert),
-                                contentDescription = null,
-                            )
-                        }
-                    },
-                    isSelected = songWrapper.isSelected && selection,
-                    modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .combinedClickable(
-                            onClick = {
-                                if (!selection) {
-                                    if (songWrapper.item.id == mediaMetadata?.id) {
-                                        playerConnection.player.togglePlayPause()
-                                    } else {
-                                        playerConnection.playQueue(
-                                            ListQueue(
-                                                title = context.getString(R.string.queue_all_songs),
-                                                items = songs.map { it.toMediaItem() },
-                                                startIndex = index,
-                                            ),
-                                        )
-                                    }
-                                } else {
-                                    songWrapper.isSelected = !songWrapper.isSelected
-                                }
-                            },
-                            onLongClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                if (!selection) {
-                                    selection = true
-                                }
-                                wrappedSongs.forEach {
-                                    it.isSelected = false
-                                } // Clear previous selections
-                                songWrapper.isSelected = true // Select current item
-                            },
+            reorderableSongItems(
+                songs = filteredSongs,
+                reorderState = reorderableState,
+                canDrag = sortType == SongSortType.CUSTOM && !selection,
+                selection = selection,
+                activeId = mediaMetadata?.id,
+                isPlaying = isPlaying,
+                onClick = { songWrapper ->
+                    if (selection) {
+                        songWrapper.isSelected = !songWrapper.isSelected
+                    } else if (songWrapper.item.id == mediaMetadata?.id) {
+                        playerConnection.player.togglePlayPause()
+                    } else {
+                        playerConnection.playQueue(
+                            ListQueue(
+                                title = context.getString(R.string.queue_all_songs),
+                                items = filteredSongs.map { it.item.toMediaItem() },
+                                startIndex = filteredSongs.indexOf(songWrapper),
+                            ),
                         )
-                        .animateItem(),
-                )
-            }
+                    }
+                },
+                onLongClick = { songWrapper ->
+                    selection = true
+                    wrappedSongs.forEach { it.isSelected = false }
+                    songWrapper.isSelected = true
+                },
+                onMenu = { song ->
+                    menuState.show {
+                        SongMenu(
+                            originalSong = song,
+                            navController = navController,
+                            onDismiss = menuState::dismiss,
+                        )
+                    }
+                },
+            )
         }
 
         HideOnScrollFAB(
@@ -352,7 +310,8 @@ fun LibrarySongsScreen(
                 playerConnection.playQueue(
                     ListQueue(
                         title = context.getString(R.string.queue_all_songs),
-                        items = songs.shuffled().map { it.toMediaItem() },
+                        items = songs.map { it.toMediaItem() },
+                        shuffle = true,
                     ),
                 )
             },

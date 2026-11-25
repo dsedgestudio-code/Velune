@@ -9,6 +9,7 @@
 package com.nikhil.yt.ui.menu
 
 import com.nikhil.yt.ui.component.VeluneLoader
+import com.nikhil.yt.ui.utils.rememberDownloadFlow
 import android.content.Intent
 import android.content.res.Configuration
 import android.widget.Toast
@@ -70,10 +71,8 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.net.toUri
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.media3.exoplayer.offline.Download
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.navigation.NavController
 import coil3.compose.AsyncImage
@@ -124,9 +123,9 @@ fun SongMenu(
     val context = LocalContext.current
     val database = LocalDatabase.current
     val playerConnection = LocalPlayerConnection.current ?: return
-    val songState = database.song(originalSong.id).collectAsState(initial = originalSong)
+    val songState = remember(originalSong.id) { database.song(originalSong.id) }.collectAsState(initial = originalSong)
     val song = songState.value ?: originalSong
-    val download by LocalDownloadUtil.current.getDownload(originalSong.id)
+    val download by rememberDownloadFlow(originalSong.id)
         .collectAsState(initial = null)
     val coroutineScope = rememberCoroutineScope()
     val syncUtils = LocalSyncUtils.current
@@ -722,18 +721,7 @@ fun SongMenu(
                                 },
                                 modifier =
                                     Modifier.clickable {
-                                        val downloadRequest =
-                                            DownloadRequest
-                                                .Builder(song.id, song.id.toUri())
-                                                .setCustomCacheKey(song.id)
-                                                .setData(song.song.title.toByteArray())
-                                                .build()
-                                        DownloadService.sendAddDownload(
-                                            context,
-                                            ExoDownloadService::class.java,
-                                            downloadRequest,
-                                            false,
-                                        )
+                                        ExoDownloadService.download(context, song.id, song.song.title)
                                     },
                                 colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             )

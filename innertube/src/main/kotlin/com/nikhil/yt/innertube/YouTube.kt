@@ -483,15 +483,7 @@ object YouTube {
         poToken: String? = null
     ): Result<PlayerResponse> = runCatching {
 
-        var resolvedPoToken = authState.resolvePlayerPoToken(client, explicitPoToken = poToken)
-
-        if (resolvedPoToken == null && PlaybackAuthState.needsServiceIntegrity(client)) {
-              resolvedPoToken = com.nikhil.yt.innertube.utils.PoTokenGenerator.generateContentToken(
-                identifier = authState.visitorData ?: "dummy_visitor_data_for_token",
-                videoId = videoId
-            )
-            authState = authState.copy(poTokenPlayer = resolvedPoToken)
-        }
+        val resolvedPoToken = authState.resolvePlayerPoToken(client, explicitPoToken = poToken)
 
         innerTube.player(client, videoId, playlistId, signatureTimestamp, resolvedPoToken).body<PlayerResponse>()
     }

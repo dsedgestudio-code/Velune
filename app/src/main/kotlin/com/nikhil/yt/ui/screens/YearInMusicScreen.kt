@@ -8,6 +8,7 @@
 
 package com.nikhil.yt.ui.screens
 
+import androidx.compose.ui.graphics.ColorFilter
 import android.content.Intent
 import android.view.View
 import android.view.ViewTreeObserver
@@ -279,7 +280,7 @@ fun YearInMusicScreen(
                                     val uri = ComposeToImage.saveBitmapAsFile(
                                         context,
                                         fitted,
-                                        "Velune_YearInMusic_$selectedYear"
+                                        "Spectra_YearInMusic_$selectedYear"
                                     )
                                     val shareIntent = Intent(Intent.ACTION_SEND).apply {
                                         type = "image/png"
@@ -1687,14 +1688,15 @@ private fun PremiumSummaryStoryCard(
                         contentAlignment = Alignment.Center
                     ) {
                         Image(
-                            painter = painterResource(R.drawable.app_icon_small),
+                            painter = painterResource(R.drawable.ic_spectra_ghost),
                             contentDescription = null,
+                            colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurface),
                             modifier = Modifier.size(24.dp)
                         )
                     }
                     Column {
                         Text(
-                            text = "Velune",
+                            text = "Spectra",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = SoftWhite
@@ -1834,7 +1836,7 @@ private fun PremiumSummaryStoryCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = joinByBullet("Velune", year.toString()),
+                        text = joinByBullet("Spectra", year.toString()),
                         style = MaterialTheme.typography.labelMedium,
                         color = SoftWhite.copy(alpha = 0.5f)
                     )

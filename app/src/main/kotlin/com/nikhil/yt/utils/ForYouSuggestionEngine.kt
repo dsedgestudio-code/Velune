@@ -30,7 +30,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class ForYouSuggestionEngine @Inject constructor(
-    private val database: MusicDatabase
+    private val database: MusicDatabase,
+    private val taste: com.nikhil.yt.playback.TasteStore,
 ) {
 
     companion object {
@@ -69,12 +70,13 @@ class ForYouSuggestionEngine @Inject constructor(
         recentIds: Set<String>,
         timeOfDay: String
     ): Float {
-        val playTime = song.song.totalPlayTime.toFloat()
+        // In plays, not milliseconds: raw ms (e.g. 600000) made the like bonus and skip penalty meaningless.
+        val plays = if (song.song.duration > 0) song.song.totalPlayTime / (song.song.duration * 1000f) else 0f
         val skipCount = skipMap[song.id]?.skipCount?.toFloat() ?: 0f
         val isLiked = song.id in likedIds
         val isRecent = song.id in recentIds
 
-        var score = playTime * PLAY_WEIGHT
+        var score = plays * PLAY_WEIGHT
         score -= skipCount * SKIP_PENALTY
         if (isLiked) score += LIKED_BONUS
         if (isRecent) score += RECENCY_BONUS
@@ -106,7 +108,7 @@ class ForYouSuggestionEngine @Inject constructor(
         val allSongs = database.mostPlayedSongs(fromTimeStamp, limit = 100).first()
         val likedSongs = database.likedSongsByPlayTimeAsc().first()
         val skips = database.getAllSkips().first()
-        val recentEvents = database.events().first().take(20)
+        val recentEvents = database.recentEvents(20).first()
 
         val likedIds = likedSongs.map { it.id }.toSet()
         val recentIds = recentEvents.mapNotNull { it.song?.id }.toSet()
@@ -170,7 +172,9 @@ class ForYouSuggestionEngine @Inject constructor(
             }
         }
 
-        return suggestions.take(MAX_SUGGESTIONS)
+        // Order by what you actually do with songs (finish / repeat / like / skip), same model as autoplay.
+        return taste.model.rank(suggestions, { it.id }, { s -> s.artists.map { it.id ?: it.name.lowercase() } })
+            .take(MAX_SUGGESTIONS)
     }
 
     /**

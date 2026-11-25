@@ -140,6 +140,7 @@ constructor(
                                         }
 
                                         SongSortType.PLAY_TIME -> songs.sortedBy { song: Song -> song.song.totalPlayTime }
+                                        SongSortType.CUSTOM -> songs
                                     }.reversed(descending).filterExplicit(hideExplicit)
                                 }
                         }

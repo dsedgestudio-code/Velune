@@ -25,16 +25,20 @@ suspend fun Result<PlaylistPage>.completed(): Result<PlaylistPage> = runCatching
     
     while (continuation != null && requestCount < maxRequests) {
         if (continuation in seenContinuations) {
+            continuation = null
             break
         }
         seenContinuations.add(continuation)
         requestCount++
         
-        val continuationPage = YouTube.playlistContinuation(continuation).getOrNull() ?: break
+        val continuationPage = YouTube.playlistContinuation(continuation).getOrNull() ?: break // leaves continuation set = incomplete
         
         if (continuationPage.songs.isEmpty()) {
             consecutiveEmptyResponses++
-            if (consecutiveEmptyResponses >= 2) break
+            if (consecutiveEmptyResponses >= 2) {
+                continuation = null
+                break
+            }
         } else {
             consecutiveEmptyResponses = 0
             songs += continuationPage.songs
@@ -45,7 +49,8 @@ suspend fun Result<PlaylistPage>.completed(): Result<PlaylistPage> = runCatching
     PlaylistPage(
         playlist = page.playlist,
         songs = songs,
-        songsContinuation = null,
+        // Non-null only if fetching stopped early (error or request cap): callers must not treat the list as complete.
+        songsContinuation = continuation,
         continuation = page.continuation
     )
 }
@@ -62,16 +67,20 @@ suspend fun Result<LibraryPage>.completed(): Result<LibraryPage> = runCatching {
     
     while (continuation != null && requestCount < maxRequests) {
         if (continuation in seenContinuations) {
+            continuation = null
             break
         }
         seenContinuations.add(continuation)
         requestCount++
         
-        val continuationPage = YouTube.libraryContinuation(continuation).getOrNull() ?: break
+        val continuationPage = YouTube.libraryContinuation(continuation).getOrNull() ?: break // leaves continuation set = incomplete
         
         if (continuationPage.items.isEmpty()) {
             consecutiveEmptyResponses++
-            if (consecutiveEmptyResponses >= 2) break
+            if (consecutiveEmptyResponses >= 2) {
+                continuation = null
+                break
+            }
         } else {
             consecutiveEmptyResponses = 0
             items += continuationPage.items
@@ -81,7 +90,8 @@ suspend fun Result<LibraryPage>.completed(): Result<LibraryPage> = runCatching {
     }
     LibraryPage(
         items = items,
-        continuation = null
+        // Non-null only if fetching stopped early (error or request cap): callers must not treat the list as complete.
+        continuation = continuation
     )
 }
 

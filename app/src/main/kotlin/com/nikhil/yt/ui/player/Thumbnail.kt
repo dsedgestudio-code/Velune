@@ -20,12 +20,10 @@ import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.snapping.SnapLayoutInfoProvider
 import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -55,6 +53,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.BlurEffect
@@ -279,9 +280,9 @@ fun Thumbnail(
     )
     val (thumbnailCornerRadius, _) = rememberPreference(
         key = ThumbnailCornerRadiusKey,
-        defaultValue = 16f
+        defaultValue = 24f
     )
-    val cropThumbnailToSquare by rememberPreference(CropThumbnailToSquareKey, false)
+    val cropThumbnailToSquare by rememberPreference(CropThumbnailToSquareKey, true)
     val canSkipPrevious by playerConnection.canSkipPrevious.collectAsState()
     val canSkipNext by playerConnection.canSkipNext.collectAsState()
     
@@ -439,25 +440,24 @@ fun Thumbnail(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.padding(horizontal = 32.dp, vertical = 16.dp)
                 ) {
-                    Text(
-                        text = stringResource(R.string.now_playing),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = textBackgroundColor
-                    )
-                    // Show album title or queue title
+                    // One quiet line of context; the source carries the weight, the artwork stays first.
                     val playingFrom = queueTitle ?: mediaMetadata?.album?.title
-                    if (!playingFrom.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = playingFrom,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = textBackgroundColor.copy(alpha = 0.8f),
-                            maxLines = 1,
-                            modifier = Modifier.basicMarquee()
-                        )
-                    }
+                    val prefix = stringResource(if (playingFrom.isNullOrBlank()) R.string.now_playing else R.string.playing_from)
+                    Text(
+                        text = buildAnnotatedString {
+                            withStyle(SpanStyle(color = textBackgroundColor.copy(alpha = 0.7f))) { append(prefix) }
+                            if (!playingFrom.isNullOrBlank()) {
+                                append("  ")
+                                withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(playingFrom) }
+                            }
+                        },
+                        style = MaterialTheme.typography.titleSmall,
+                        color = textBackgroundColor,
+                        maxLines = 1,
+                        modifier = Modifier.basicMarquee()
+                    )
                 }
-                
+
                 // Thumbnail content
                 BoxWithConstraints(
                     contentAlignment = Alignment.Center,
@@ -623,7 +623,7 @@ fun Thumbnail(
                                             contentAlignment = Alignment.Center
                                         ) {
                                             Icon(
-                                                painter = painterResource(R.drawable.about_splash),
+                                                painter = painterResource(R.drawable.ic_spectra_ghost),
                                                 contentDescription = stringResource(R.string.hide_player_thumbnail),
                                                 tint = textBackgroundColor.copy(alpha = 0.7f),
                                                 modifier = Modifier.size(120.dp)

@@ -25,6 +25,7 @@ import coil3.request.allowHardware
 import coil3.request.crossfade
 import com.nikhil.yt.constants.*
 import com.nikhil.yt.extensions.*
+
 import com.nikhil.yt.ui.screens.settings.ThemePalettes
 import com.nikhil.yt.ui.theme.ThemeSeedPalette
 import com.nikhil.yt.ui.theme.ThemeSeedPaletteCodec
@@ -112,41 +113,41 @@ class App : Application(), SingletonImageLoader.Factory {
             apiKey = BuildConfig.LASTFM_API_KEY,
             secret = BuildConfig.LASTFM_SECRET
         )
+        applyNetworkPreferences()
+    }
+
+    // Synchronous (settings are already loaded): the first requests, e.g. playback started from a headset,
+    // must not bypass the user's proxy or use the wrong content region.
+    private fun applyNetworkPreferences() {
+        dataStore[ContentCountryKey]?.takeIf { it != SYSTEM_DEFAULT }?.let { country ->
+            YouTube.locale = YouTube.locale.copy(gl = country)
+        }
+        dataStore[ContentLanguageKey]?.takeIf { it != SYSTEM_DEFAULT }?.let { lang ->
+            YouTube.locale = YouTube.locale.copy(hl = lang)
+        }
+        LastFM.sessionKey = dataStore[LastFMSessionKey]
+        if (dataStore[ProxyEnabledKey] == true) {
+            try {
+                YouTube.proxy = Proxy(
+                    dataStore[ProxyTypeKey].toEnum(defaultValue = Proxy.Type.HTTP),
+                    dataStore[ProxyUrlKey]!!.toInetSocketAddress()
+                )
+            } catch (e: Exception) {
+                Toast.makeText(this, "Failed to parse proxy url.", LENGTH_SHORT).show()
+                reportException(e)
+            }
+            YouTube.streamBypassProxy = dataStore[StreamBypassProxyKey] == true
+        }
+        if (dataStore[UseLoginForBrowse] != false) {
+            YouTube.useLoginForBrowse = true
+        }
     }
 
     private fun initializeDeferredAsync() {
         applicationScope.launch(Dispatchers.IO) {
             try {
                 val prefs = dataStore.data.first()
-                
-                prefs[ContentCountryKey]?.takeIf { it != SYSTEM_DEFAULT }?.let { country ->
-                    YouTube.locale = YouTube.locale.copy(gl = country)
-                }
-                prefs[ContentLanguageKey]?.takeIf { it != SYSTEM_DEFAULT }?.let { lang ->
-                    YouTube.locale = YouTube.locale.copy(hl = lang)
-                }
-                
-                LastFM.sessionKey = prefs[LastFMSessionKey]
 
-                if (prefs[ProxyEnabledKey] == true) {
-                    try {
-                        YouTube.proxy = Proxy(
-                            prefs[ProxyTypeKey].toEnum(defaultValue = Proxy.Type.HTTP),
-                            prefs[ProxyUrlKey]!!.toInetSocketAddress()
-                        )
-                    } catch (e: Exception) {
-                        withContext(Dispatchers.Main) {
-                            Toast.makeText(this@App, "Failed to parse proxy url.", LENGTH_SHORT).show()
-                        }
-                        reportException(e)
-                    }
-                    YouTube.streamBypassProxy = prefs[StreamBypassProxyKey] == true
-                }
-
-                if (prefs[UseLoginForBrowse] != false) {
-                    YouTube.useLoginForBrowse = true
-                }
-                
                 // Apply random theme on startup if enabled
                 if (prefs[RandomThemeOnStartupKey] == true) {
                     val randomPalette = ThemePalettes.generateRandomPalette()
@@ -259,6 +260,8 @@ class App : Application(), SingletonImageLoader.Factory {
                     YouTube.poTokenPlayer = token?.takeIf { it.isNotBlank() }
                 }
         }
+        // poToken is extracted from the real BotGuard/WebView flow during login.
+        // Do not generate fake tokens — they trigger bot detection.
         applicationScope.launch(Dispatchers.IO) {
             dataStore.data
                 .map { it[LastFMSessionKey] }

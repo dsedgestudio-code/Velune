@@ -57,13 +57,19 @@ fun PlaybackError(
         when {
             error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED -> fallbackNoInternet
             error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> fallbackTimeout
-            httpCode in setOf(403, 404, 410, 416) -> fallbackNoStream
+            httpCode == 429 -> "[E-4029] Rate limited — too many requests, wait a moment"
+            httpCode == 403 -> "[E-4003] Access denied — stream blocked or expired"
+            httpCode in setOf(404, 410) -> "[E-4004] Stream not found — song may be unavailable in your region"
+            httpCode == 416 -> "[E-4016] Stream range error — cached data may be stale"
+            httpCode in setOf(500, 502, 503) -> "[E-5000] YouTube server error (HTTP $httpCode) — try again"
             error.errorCode in setOf(
                 PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
                 PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+            ) -> "[E-6001] Audio format not supported on this device (code ${error.errorCode})"
+            error.errorCode in setOf(
                 PlaybackException.ERROR_CODE_DECODING_FAILED,
                 PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
-            ) -> "$fallbackUnknown (code ${error.errorCode})"
+            ) -> "[E-6002] Decoding failed — try a different audio quality (code ${error.errorCode})"
             httpCode != null -> "$fallbackUnknown (HTTP $httpCode)"
             else -> error.cause?.message?.takeIf { it.isNotBlank() }
                 ?: error.message?.takeIf { it.isNotBlank() }
@@ -122,7 +128,16 @@ fun PlaybackError(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Text(
-                        text = fallbackUnknown,
+                        text = when {
+                            reason.startsWith("[E-2000]") -> "Bot Detection"
+                            reason.startsWith("[E-3") -> "Playback Failed"
+                            reason.startsWith("[E-4") -> "Stream Error"
+                            reason.startsWith("[E-5") -> "Server Error"
+                            reason.startsWith("[E-6") -> "Format Error"
+                            reason == fallbackNoInternet -> "No Internet"
+                            reason == fallbackTimeout -> "Timeout"
+                            else -> fallbackUnknown
+                        },
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         maxLines = 1,

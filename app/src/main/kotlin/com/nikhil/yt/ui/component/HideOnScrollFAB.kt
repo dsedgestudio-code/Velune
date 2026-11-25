@@ -36,6 +36,7 @@ fun BoxScope.HideOnScrollFAB(
     lazyListState: LazyListState,
     @DrawableRes icon: Int,
     onClick: () -> Unit,
+    contentDescription: String? = null,
 ) {
     AnimatedVisibility(
         visible = visible && lazyListState.isScrollingUp(),
@@ -55,7 +56,7 @@ fun BoxScope.HideOnScrollFAB(
         ) {
             Icon(
                 painter = painterResource(icon),
-                contentDescription = null,
+                contentDescription = contentDescription,
             )
         }
     }
@@ -67,6 +68,7 @@ fun BoxScope.HideOnScrollFAB(
     lazyListState: LazyGridState,
     @DrawableRes icon: Int,
     onClick: () -> Unit,
+    contentDescription: String? = null,
 ) {
     AnimatedVisibility(
         visible = visible && lazyListState.isScrollingUp(),
@@ -86,7 +88,7 @@ fun BoxScope.HideOnScrollFAB(
         ) {
             Icon(
                 painter = painterResource(icon),
-                contentDescription = null,
+                contentDescription = contentDescription,
             )
         }
     }
@@ -98,6 +100,7 @@ fun BoxScope.HideOnScrollFAB(
     scrollState: ScrollState,
     @DrawableRes icon: Int,
     onClick: () -> Unit,
+    contentDescription: String? = null,
 ) {
     AnimatedVisibility(
         visible = visible && scrollState.isScrollingUp(),
@@ -117,7 +120,7 @@ fun BoxScope.HideOnScrollFAB(
         ) {
             Icon(
                 painter = painterResource(icon),
-                contentDescription = null,
+                contentDescription = contentDescription,
             )
         }
     }

@@ -37,18 +37,6 @@ object PlayerBackgroundColorUtils {
         return hsv.toColor()
     }
 
-    fun buildColoringStops(baseColor: Color): Array<Pair<Float, Color>> {
-        val comfortable = ensureComfortableColor(baseColor, minBrightness = 0.18f, maxBrightness = 0.5f)
-        val mid = darkenColor(comfortable, 0.82f)
-        val deep = darkenColor(comfortable, 0.6f)
-        return arrayOf(
-            0f to comfortable.copy(alpha = 0.97f),
-            0.4f to mid.copy(alpha = 0.94f),
-            0.75f to deep.copy(alpha = 0.92f),
-            1f to Color.Black.copy(alpha = 0.88f)
-        )
-    }
-
     fun buildBlurOverlayStops(colors: List<Color>): Array<Pair<Float, Color>> {
         if (colors.isEmpty()) {
             return defaultBlurOverlayStops()

@@ -42,11 +42,13 @@ import com.nikhil.yt.LocalPlayerAwareWindowInsets
 import com.nikhil.yt.R
 import com.nikhil.yt.constants.ArtistSeparatorsKey
 import com.nikhil.yt.constants.AudioNormalizationKey
+import com.nikhil.yt.constants.ImmersiveAudioKey
 import com.nikhil.yt.constants.AudioOffload
 import com.nikhil.yt.constants.AudioQuality
 import com.nikhil.yt.constants.AudioQualityKey
 import com.nikhil.yt.constants.NetworkMeteredKey
 import com.nikhil.yt.constants.AutoDownloadOnLikeKey
+import com.nikhil.yt.constants.DownloadWifiOnlyKey
 import com.nikhil.yt.constants.AutoStartOnBluetoothKey
 import com.nikhil.yt.constants.AutoSkipNextOnErrorKey
 import com.nikhil.yt.constants.PauseOnDeviceMuteKey
@@ -109,6 +111,10 @@ fun PlayerSettings(
         AudioNormalizationKey,
         defaultValue = true
     )
+    val (immersiveAudio, onImmersiveAudioChange) = rememberPreference(
+        ImmersiveAudioKey,
+        defaultValue = false
+    )
     val (audioOffload, onAudioOffloadChange) = rememberPreference(
         AudioOffload,
         defaultValue = false
@@ -123,9 +129,13 @@ fun PlayerSettings(
         AutoDownloadOnLikeKey,
         defaultValue = false
     )
+    val (downloadWifiOnly, onDownloadWifiOnlyChange) = rememberPreference(
+        DownloadWifiOnlyKey,
+        defaultValue = false
+    )
     val (autoSkipNextOnError, onAutoSkipNextOnErrorChange) = rememberPreference(
         AutoSkipNextOnErrorKey,
-        defaultValue = false
+        defaultValue = true
     )
     val (pauseOnDeviceMute, onPauseOnDeviceMuteChange) = rememberPreference(
         PauseOnDeviceMuteKey,
@@ -314,6 +324,18 @@ fun PlayerSettings(
         )
 
         SwitchPreference(
+            title = { Text(stringResource(R.string.immersive_audio)) },
+            description = stringResource(R.string.immersive_audio_desc),
+            icon = { Icon(painterResource(R.drawable.graphic_eq), null) },
+            checked = immersiveAudio,
+            onCheckedChange = { enabled ->
+                onImmersiveAudioChange(enabled)
+                // Offload sends audio straight to the hardware, skipping in-app processing.
+                if (enabled) onAudioOffloadChange(false)
+            }
+        )
+
+        SwitchPreference(
             title = { Text(stringResource(R.string.audio_offload)) },
             description = stringResource(R.string.audio_offload_desc),
             icon = { Icon(painterResource(R.drawable.speed), null) },
@@ -321,6 +343,7 @@ fun PlayerSettings(
             onCheckedChange = { enabled ->
                 onAudioOffloadChange(enabled)
                 if (enabled) {
+                    onImmersiveAudioChange(false)
                     onSkipSilenceChange(false)
                 }
             }
@@ -376,6 +399,14 @@ fun PlayerSettings(
             icon = { Icon(painterResource(R.drawable.download), null) },
             checked = autoDownloadOnLike,
             onCheckedChange = onAutoDownloadOnLikeChange
+        )
+
+        SwitchPreference(
+            title = { Text(stringResource(R.string.download_wifi_only)) },
+            description = stringResource(R.string.download_wifi_only_desc),
+            icon = { Icon(painterResource(R.drawable.download), null) },
+            checked = downloadWifiOnly,
+            onCheckedChange = onDownloadWifiOnlyChange
         )
 
         SwitchPreference(

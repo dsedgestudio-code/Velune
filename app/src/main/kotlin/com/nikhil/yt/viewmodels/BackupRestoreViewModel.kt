@@ -8,6 +8,15 @@
 
 package com.nikhil.yt.viewmodels
 
+import com.nikhil.yt.constants.InnerTubeCookieKey
+import com.nikhil.yt.constants.DataSyncIdKey
+import com.nikhil.yt.constants.VisitorDataKey
+import com.nikhil.yt.constants.PoTokenKey
+import com.nikhil.yt.constants.PoTokenGvsKey
+import com.nikhil.yt.constants.PoTokenPlayerKey
+import com.nikhil.yt.constants.DiscordTokenKey
+import com.nikhil.yt.constants.ListenBrainzTokenKey
+import com.nikhil.yt.constants.LastFMSessionKey
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -308,6 +317,9 @@ class BackupRestoreViewModel @Inject constructor(
                 runCatching { database.close() }
                 completedUnits++
 
+                // DB files are staged here and only swapped in after the whole zip was read, so a broken
+                // backup can never leave the current library deleted or half-written.
+                val staging = context.cacheDir.resolve("restore-staging").apply { deleteRecursively(); mkdirs() }
                 context.applicationContext.contentResolver.openInputStream(uri)?.use { stream ->
                     stream.zipInputStream().use { zip ->
                         var entry = zip.nextEntry
@@ -335,11 +347,7 @@ class BackupRestoreViewModel @Inject constructor(
                                 "${InternalDatabase.DB_NAME}-shm",
                                 "${InternalDatabase.DB_NAME}-journal" -> {
                                     emit(context.getString(R.string.restore_step_restoring_file, name), indeterminate = true)
-                                    val dbFile = context.getDatabasePath(name)
-                                    if (dbFile.exists()) {
-                                        dbFile.delete()
-                                    }
-                                    FileOutputStream(dbFile).use { out ->
+                                    FileOutputStream(staging.resolve(name)).use { out ->
                                         zip.copyTo(out)
                                     }
                                 }
@@ -349,6 +357,17 @@ class BackupRestoreViewModel @Inject constructor(
                         }
                     }
                 }
+
+                if (staging.resolve(InternalDatabase.DB_NAME).exists()) {
+                    // Remove every old file first: a leftover -wal from the old library would corrupt the restored one.
+                    listOf("", "-wal", "-shm", "-journal").forEach { suffix ->
+                        context.getDatabasePath(InternalDatabase.DB_NAME + suffix).delete()
+                    }
+                    staging.listFiles()?.forEach { file ->
+                        file.copyTo(context.getDatabasePath(file.name), overwrite = true)
+                    }
+                }
+                staging.deleteRecursively()
 
                 emitProgress(
                     title = title,
@@ -386,6 +405,7 @@ class BackupRestoreViewModel @Inject constructor(
         serializer.startTag(null, "Settings")
 
         for ((key, value) in prefs) {
+            if (key.name in SECRET_SETTING_KEYS) continue
             val tagName = when (value) {
                 is Boolean -> "boolean"
                 is Int -> "int"
@@ -649,5 +669,11 @@ class BackupRestoreViewModel @Inject constructor(
     companion object {
         const val SETTINGS_FILENAME = "settings.preferences_pb"
         const val SETTINGS_XML_FILENAME = "settings.xml"
+
+        /** Sign-in secrets never go into a backup file: anyone holding the file could use the accounts. */
+        private val SECRET_SETTING_KEYS = setOf(
+            InnerTubeCookieKey, DataSyncIdKey, VisitorDataKey, PoTokenKey, PoTokenGvsKey, PoTokenPlayerKey,
+            DiscordTokenKey, ListenBrainzTokenKey, LastFMSessionKey,
+        ).map { it.name }.toSet()
     }
 }

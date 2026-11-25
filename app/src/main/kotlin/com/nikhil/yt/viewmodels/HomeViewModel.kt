@@ -236,7 +236,7 @@ class HomeViewModel @Inject constructor(
     }
 
     private suspend fun songLoad() {
-        val song = database.events().first().firstOrNull()?.song
+        val song = database.recentEvents(1).first().firstOrNull()?.song
         if (song != null) {
             if (database.hasRelatedSongs(song.id)) {
                 val relatedSongs = database.getRelatedSongs(song.id).first().shuffled().take(20)

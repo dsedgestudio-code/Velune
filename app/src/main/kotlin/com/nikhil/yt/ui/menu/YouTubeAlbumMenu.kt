@@ -56,9 +56,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.net.toUri
 import androidx.media3.exoplayer.offline.Download
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.navigation.NavController
 import com.nikhil.yt.innertube.YouTube
@@ -96,7 +94,7 @@ fun YouTubeAlbumMenu(
     val database = LocalDatabase.current
     val downloadUtil = LocalDownloadUtil.current
     val playerConnection = LocalPlayerConnection.current ?: return
-    val album by database.albumWithSongs(albumItem.id).collectAsState(initial = null)
+    val album by remember(albumItem.id) { database.albumWithSongs(albumItem.id) }.collectAsState(initial = null)
     val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
@@ -484,18 +482,7 @@ fun YouTubeAlbumMenu(
                         },
                         modifier = Modifier.clickable {
                             album?.songs?.forEach { song ->
-                                val downloadRequest =
-                                    DownloadRequest
-                                        .Builder(song.id, song.id.toUri())
-                                        .setCustomCacheKey(song.id)
-                                        .setData(song.song.title.toByteArray())
-                                        .build()
-                                DownloadService.sendAddDownload(
-                                    context,
-                                    ExoDownloadService::class.java,
-                                    downloadRequest,
-                                    false,
-                                )
+                                ExoDownloadService.download(context, song.id, song.song.title)
                             }
                         }
                     )

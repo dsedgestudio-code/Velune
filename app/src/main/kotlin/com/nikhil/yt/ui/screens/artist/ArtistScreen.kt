@@ -13,7 +13,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -42,13 +41,11 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -74,7 +71,6 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
@@ -82,7 +78,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -119,6 +114,8 @@ import com.nikhil.yt.innertube.models.WatchEndpoint
 import com.nikhil.yt.models.toMediaMetadata
 import com.nikhil.yt.playback.queues.ListQueue
 import com.nikhil.yt.playback.queues.YouTubeQueue
+import com.nikhil.yt.ui.component.CollectionAction
+import com.nikhil.yt.ui.component.CollectionActionRow
 import com.nikhil.yt.ui.component.AlbumGridItem
 import com.nikhil.yt.ui.component.HideOnScrollFAB
 import com.nikhil.yt.ui.component.IconButton
@@ -596,16 +593,24 @@ fun ArtistScreen(
                             }
                         }
 
-                        // Action Buttons
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 24.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally)
+                        val isSubscribed = libraryArtist?.artist?.bookmarkedAt != null
+                        fun localQueue(shuffle: Boolean) = ListQueue(
+                            title = libraryArtist?.artist?.name ?: "Unknown Artist",
+                            items = librarySongs.map { it.toMediaItem() },
+                            shuffle = shuffle,
+                        )
+                        val ytArtist = artistPage?.artist
+                        CollectionActionRow(
+                            onPlay = when {
+                                showLocal -> if (librarySongs.isNotEmpty()) { { playerConnection.playQueue(localQueue(shuffle = false)) } } else null
+                                else -> (ytArtist?.playEndpoint ?: ytArtist?.shuffleEndpoint)?.let { ep -> { playerConnection.playQueue(YouTubeQueue(ep)) } }
+                            },
+                            onShuffle = when {
+                                showLocal -> if (librarySongs.isNotEmpty()) { { playerConnection.playQueue(localQueue(shuffle = true)) } } else null
+                                else -> ytArtist?.shuffleEndpoint?.let { ep -> { playerConnection.playQueue(YouTubeQueue(ep)) } }
+                            },
+                            modifier = Modifier.padding(vertical = 8.dp),
                         ) {
-                            // Subscribe/Following Button
-                            val isSubscribed = libraryArtist?.artist?.bookmarkedAt != null
-
                             FilledTonalButton(
                                 onClick = {
                                     database.transaction {
@@ -627,92 +632,17 @@ fun ArtistScreen(
                                     }
                                 },
                                 colors = ButtonDefaults.filledTonalButtonColors(
-                                    containerColor = if (isSubscribed)
-                                        MaterialTheme.colorScheme.primaryContainer
-                                    else
-                                        MaterialTheme.colorScheme.secondaryContainer,
-                                    contentColor = if (isSubscribed)
-                                        MaterialTheme.colorScheme.onPrimaryContainer
-                                    else
-                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    containerColor = if (isSubscribed) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.onSurface,
+                                    contentColor = if (isSubscribed) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.surface,
                                 ),
-                                shape = RoundedCornerShape(24.dp),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
+                                contentPadding = PaddingValues(horizontal = 18.dp),
+                                modifier = Modifier.padding(start = 8.dp, end = 4.dp).height(40.dp),
                             ) {
-                                Icon(
-                                    painter = painterResource(
-                                        if (isSubscribed) R.drawable.done else R.drawable.add
-                                    ),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = stringResource(
-                                        if (isSubscribed) R.string.subscribed else R.string.subscribe
-                                    ),
-                                    maxLines = 1
-                                )
+                                Text(stringResource(if (isSubscribed) R.string.subscribed else R.string.subscribe), maxLines = 1)
                             }
-
-                            // Shuffle Button
-                            Button(
-                                onClick = {
-                                    if (!showLocal) {
-                                        artistPage?.artist?.shuffleEndpoint?.let { shuffleEndpoint ->
-                                            playerConnection.playQueue(YouTubeQueue(shuffleEndpoint))
-                                        }
-                                    } else if (librarySongs.isNotEmpty()) {
-                                        val shuffledSongs = librarySongs.shuffled()
-                                        playerConnection.playQueue(
-                                            ListQueue(
-                                                title = libraryArtist?.artist?.name ?: "Unknown Artist",
-                                                items = shuffledSongs.map { it.toMediaItem() }
-                                            )
-                                        )
-                                    }
-                                },
-                                enabled = if (showLocal) librarySongs.isNotEmpty() else artistPage?.artist?.shuffleEndpoint != null,
-                                shape = RoundedCornerShape(24.dp),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                            ) {
-                                Icon(
-                                    painter = painterResource(R.drawable.shuffle),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = stringResource(R.string.shuffle),
-                                    maxLines = 1
-                                )
-                            }
-                        }
-
-                        // Radio Button (for YouTube artists)
-                        if (!showLocal) {
-                            artistPage?.artist?.radioEndpoint?.let { radioEndpoint ->
-                                OutlinedButton(
-                                    onClick = {
-                                        playerConnection.playQueue(YouTubeQueue(radioEndpoint))
-                                    },
-                                    shape = RoundedCornerShape(24.dp),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 24.dp, vertical = 8.dp)
-                                        .height(44.dp)
-                                ) {
-                                    Icon(
-                                        painter = painterResource(R.drawable.radio),
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(text = stringResource(R.string.radio))
+                            if (!showLocal) {
+                                ytArtist?.radioEndpoint?.let { ep ->
+                                    CollectionAction(R.drawable.radio, stringResource(R.string.radio), { playerConnection.playQueue(YouTubeQueue(ep)) })
                                 }
                             }
                         }

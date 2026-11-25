@@ -14,19 +14,21 @@ import com.nikhil.yt.constants.AudioQuality
 import com.nikhil.yt.constants.PlayerStreamClient
 import com.nikhil.yt.innertube.pages.NewPipeUtils
 import com.nikhil.yt.innertube.YouTube
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
 import com.nikhil.yt.innertube.models.YouTubeClient
-import com.nikhil.yt.innertube.models.YouTubeClient.Companion.IOS
-import com.nikhil.yt.innertube.models.YouTubeClient.Companion.TVHTML5_SIMPLY_EMBEDDED_PLAYER
 import com.nikhil.yt.innertube.models.YouTubeClient.Companion.WEB_REMIX
 import com.nikhil.yt.innertube.models.response.PlayerResponse
-import com.nikhil.yt.innertube.models.YouTubeClient.Companion.ANDROID_CREATOR
 import com.nikhil.yt.innertube.models.YouTubeClient.Companion.ANDROID_MUSIC
-import com.nikhil.yt.innertube.models.YouTubeClient.Companion.ANDROID_TESTSUITE
 import com.nikhil.yt.innertube.models.YouTubeClient.Companion.ANDROID_UNPLUGGED
 import com.nikhil.yt.innertube.models.YouTubeClient.Companion.ANDROID_VR_1_43_32
 import com.nikhil.yt.innertube.models.YouTubeClient.Companion.ANDROID_VR_1_61_48
 import com.nikhil.yt.innertube.models.YouTubeClient.Companion.ANDROID_VR_NO_AUTH
-import com.nikhil.yt.innertube.models.YouTubeClient.Companion.IPADOS
 import com.nikhil.yt.innertube.models.YouTubeClient.Companion.IOS_MUSIC
 import com.nikhil.yt.innertube.models.YouTubeClient.Companion.MOBILE
 import com.nikhil.yt.innertube.models.YouTubeClient.Companion.TVHTML5
@@ -68,26 +70,27 @@ object YTPlayerUtils {
     private val MAIN_CLIENT: YouTubeClient = WEB_REMIX
     /**
      * Clients used for fallback streams in case the streams of the main client do not work.
+     * Removed after a live probe (2026-11-24) failed them on every song regardless of session:
+     * IOS / IPADOS / ANDROID_CREATOR (HTTP 4xx), ANDROID_TESTSUITE ("not available"),
+     * TVHTML5_SIMPLY_EMBEDDED_PLAYER ("YouTube is no longer supported in this app").
      */
     private val STREAM_FALLBACK_CLIENTS: Array<YouTubeClient> = arrayOf(
-        MOBILE,
-        ANDROID_MUSIC,
         ANDROID_VR_NO_AUTH,
-        IOS,
-        IOS_MUSIC,
-        TVHTML5_SIMPLY_EMBEDDED_PLAYER,
+        ANDROID_MUSIC,
+        MOBILE,
         ANDROID_VR_1_61_48,
         ANDROID_VR_1_43_32,
-        ANDROID_CREATOR,
-        ANDROID_TESTSUITE,
         ANDROID_UNPLUGGED,
-        IPADOS,
+        IOS_MUSIC,
         VISIONOS,
         TVHTML5,
         WEB,
         WEB_CREATOR,
         WEB_REMIX
     )
+
+    /** How many upcoming clients' player responses are fetched in parallel while one is being validated. */
+    private const val CLIENT_LOOKAHEAD = 2
     private data class CachedStreamUrl(
         val url: String,
         val expiresAtMs: Long,
@@ -216,11 +219,12 @@ object YTPlayerUtils {
 
         val preferredYouTubeClient =
             when (preferredStreamClient) {
-                PlayerStreamClient.ANDROID_VR -> IOS // Aliased to IOS to bypass bot detection currently blocking VR clients
+                // Was aliased to IOS, but IOS 19.29.1 now gets HTTP 400 "Precondition check failed" on every request (tested 2026-11-23).
+                PlayerStreamClient.ANDROID_VR -> ANDROID_VR_NO_AUTH
                 PlayerStreamClient.WEB_REMIX -> WEB_REMIX
-                PlayerStreamClient.IOS -> IOS
+                PlayerStreamClient.IOS -> ANDROID_VR_NO_AUTH // IOS 19.29.1 is rejected (HTTP 400) on every request
                 PlayerStreamClient.MOBILE -> ANDROID_MUSIC
-                PlayerStreamClient.TVHTML5 -> TVHTML5_SIMPLY_EMBEDDED_PLAYER
+                PlayerStreamClient.TVHTML5 -> TVHTML5 // the embedded-player variant is shut down by YouTube
                 PlayerStreamClient.ANDROID_MUSIC -> ANDROID_MUSIC
             }
 
@@ -240,17 +244,32 @@ object YTPlayerUtils {
                 add(preferredYouTubeClient)
                 addAll(orderedFallbackClients)
                 if (preferredYouTubeClient != MAIN_CLIENT) add(MAIN_CLIENT)
-            }.distinct().filterNot { client ->
+            }.distinct()
+            .filter { it == MAIN_CLIENT || !it.loginRequired || isLoggedIn }
+            .sortedBy { client ->
+                // Deprioritize (not drop) recently failed clients: the block is global, so dropping them
+                // could leave zero clients and fail every song until the backoff expires.
                 val blocked = isStreamClientTemporarilyBlocked(videoId, client.clientName)
                 if (blocked) {
-                    Timber.tag(logTag).w("Temporarily blocked stream client for $videoId: ${client.clientName}")
+                    Timber.tag(logTag).w("Temporarily deprioritized stream client for $videoId: ${client.clientName}")
                 }
                 blocked
             }
 
         val botDetectedClients = mutableSetOf<String>()
 
+        // Each client's response is requested ahead of time (CLIENT_LOOKAHEAD), but still evaluated in priority order.
+        val lookaheadScope = CoroutineScope(currentCoroutineContext() + SupervisorJob(currentCoroutineContext()[Job]))
+        val responses = streamClients.map { client ->
+            lookaheadScope.async(start = CoroutineStart.LAZY) {
+                if (client == metadataClient) metadataPlayerResponse
+                else YouTube.player(videoId, playlistId, client, signatureTimestamp).getOrNull()
+            }
+        }
+
+        try {
         for ((index, client) in streamClients.withIndex()) {
+            responses.subList(index, minOf(index + 1 + CLIENT_LOOKAHEAD, responses.size)).forEach { it.start() }
             format = null
             streamUrl = null
             streamExpiresInSeconds = null
@@ -260,18 +279,7 @@ object YTPlayerUtils {
                 "Trying ${if (client == MAIN_CLIENT) "MAIN_CLIENT" else "fallback client"} ${index + 1}/${streamClients.size}: ${client.clientName}"
             )
 
-            if (client != MAIN_CLIENT && client.loginRequired && !isLoggedIn) {
-                Timber.tag(logTag).w("Skipping client ${client.clientName} - requires login but user is not logged in")
-                continue
-            }
-
-            streamPlayerResponse =
-                if (client == metadataClient) {
-                    metadataPlayerResponse
-                } else {
-                    Timber.tag(logTag).i("Fetching player response for fallback client: ${client.clientName}")
-                    YouTube.player(videoId, playlistId, client, signatureTimestamp).getOrNull()
-                }
+            streamPlayerResponse = responses[index].await()
 
             if (streamPlayerResponse == null) continue
 
@@ -281,12 +289,9 @@ object YTPlayerUtils {
                 Timber.tag(logTag).w(
                     "Player response status not OK: ${streamPlayerResponse.playabilityStatus.status}, reason: $reason, botDetection: $isBotDetection"
                 )
-                if (isBotDetection) {
-                    botDetectedClients.add(client.clientName)
-
-                    failedStreamClientsUntil[normalizeStreamClientKey(client.clientName)] =
-                        System.currentTimeMillis() + FAILED_CLIENT_BACKOFF_MS
-                }
+                // No global backoff here: YouTube's bot check is per video (tested: same client + IP, one song OK,
+                // the next "not a bot"), so penalizing the client would only slow down every other song.
+                if (isBotDetection) botDetectedClients.add(client.clientName)
                 continue
             }
 
@@ -345,43 +350,64 @@ object YTPlayerUtils {
             streamExpiresInSeconds = null
             streamPlayerResponse = null
         }
+        } finally {
+            // Don't keep fetching (or wait for) clients we no longer need.
+            lookaheadScope.cancel()
+        }
 
         if (streamPlayerResponse == null) {
             if (botDetectedClients.isNotEmpty()) {
                 Timber.tag(logTag).e("Bot detection triggered on clients: $botDetectedClients - all clients failed")
                 throw PlaybackException(
-                    "Sign in to confirm you're not a bot",
+                    "[E-2000] Bot detection — sign in or try again later (clients: ${botDetectedClients.joinToString()})",
                     null,
                     PlaybackException.ERROR_CODE_REMOTE_ERROR
                 )
             }
-            Timber.tag(logTag).e("Bad stream player response - all clients failed")
-            throw Exception("Bad stream player response")
+            Timber.tag(logTag).e("Bad stream player response - all clients failed for $videoId")
+            throw PlaybackException(
+                "[E-3001] No playable stream found — all ${streamClients.size} clients failed for this song",
+                null,
+                PlaybackException.ERROR_CODE_REMOTE_ERROR
+            )
         }
 
         if (streamPlayerResponse.playabilityStatus.status != "OK") {
             val errorReason = streamPlayerResponse.playabilityStatus.reason
             Timber.tag(logTag).e("Playability status not OK: $errorReason")
             throw PlaybackException(
-                errorReason,
+                "[E-3002] Blocked: ${errorReason ?: "unknown reason"}",
                 null,
                 PlaybackException.ERROR_CODE_REMOTE_ERROR
             )
         }
 
         if (streamExpiresInSeconds == null) {
-            Timber.tag(logTag).e("Missing stream expire time")
-            throw Exception("Missing stream expire time")
+            Timber.tag(logTag).e("Missing stream expire time for $videoId")
+            throw PlaybackException(
+                "[E-3003] Stream expired before playback could start",
+                null,
+                PlaybackException.ERROR_CODE_REMOTE_ERROR
+            )
         }
 
         if (format == null) {
-            Timber.tag(logTag).e("Could not find suitable format for quality: $audioQuality. Available formats from last client: ${streamPlayerResponse.streamingData?.adaptiveFormats?.filter { it.isAudio }?.map { "${it.mimeType} @ ${it.bitrate}bps (itag: ${it.itag})" }}")
-            throw Exception("Could not find format for quality: $audioQuality")
+            val available = streamPlayerResponse.streamingData?.adaptiveFormats?.filter { it.isAudio }?.size ?: 0
+            Timber.tag(logTag).e("Could not find suitable format for quality: $audioQuality. Available audio formats: $available")
+            throw PlaybackException(
+                "[E-3004] No compatible audio format (quality: $audioQuality, available: $available)",
+                null,
+                PlaybackException.ERROR_CODE_REMOTE_ERROR
+            )
         }
 
         if (streamUrl == null) {
             Timber.tag(logTag).e("Could not find stream url for format: ${format.mimeType}, itag: ${format.itag}")
-            throw Exception("Could not find stream url")
+            throw PlaybackException(
+                "[E-3005] Stream URL unavailable (format: ${format.itag})",
+                null,
+                PlaybackException.ERROR_CODE_REMOTE_ERROR
+            )
         }
 
         Timber.tag(logTag).i("Successfully obtained playback data with format: ${format.mimeType}, bitrate: ${format.bitrate}")
@@ -393,9 +419,11 @@ object YTPlayerUtils {
             )
 
         return PlaybackData(
-            audioConfig,
-            videoDetails,
-            playbackTracking,
+            // Metadata client can fail (e.g. WEB_REMIX "page needs to be reloaded") - then take loudness etc. from
+            // the stream response, or normalization silently stops working.
+            audioConfig ?: streamPlayerResponse.playerConfig?.audioConfig,
+            videoDetails ?: streamPlayerResponse.videoDetails,
+            playbackTracking ?: streamPlayerResponse.playbackTracking,
             format,
             streamUrl,
             streamExpiresInSeconds,
@@ -432,7 +460,7 @@ object YTPlayerUtils {
         ).firstOrNull()
     }
 
-    private fun selectAudioFormatCandidates(
+    internal fun selectAudioFormatCandidates(
         playerResponse: PlayerResponse,
         audioQuality: AudioQuality,
         networkMetered: Boolean,
@@ -620,8 +648,9 @@ object YTPlayerUtils {
 
     private fun isBotDetectionError(reason: String): Boolean {
         val lower = reason.lowercase(Locale.US)
-        return "sign in" in lower ||
-                "bot" in lower ||
+        // No bare "sign in": it also matches per-video reasons like "Sign in to confirm your age",
+        // which would wrongly block the client for every song.
+        return "bot" in lower ||
                 "confirm" in lower && "not a" in lower ||
                 "verify" in lower && "human" in lower
     }

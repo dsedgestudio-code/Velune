@@ -35,8 +35,12 @@ import com.nikhil.yt.constants.AccountEmailKey
 import com.nikhil.yt.constants.AccountNameKey
 import com.nikhil.yt.constants.DataSyncIdKey
 import com.nikhil.yt.constants.InnerTubeCookieKey
+import com.nikhil.yt.constants.PoTokenGvsKey
 import com.nikhil.yt.constants.PoTokenKey
+import com.nikhil.yt.constants.PoTokenPlayerKey
 import com.nikhil.yt.constants.VisitorDataKey
+import com.nikhil.yt.constants.WebClientPoTokenEnabledKey
+import com.nikhil.yt.innertube.utils.PoTokenGenerator
 import com.nikhil.yt.ui.component.IconButton
 import com.nikhil.yt.ui.utils.backToMain
 import com.nikhil.yt.utils.rememberPreference
@@ -58,6 +62,9 @@ fun LoginScreen(
     var dataSyncId by rememberPreference(DataSyncIdKey, "")
     var innerTubeCookie by rememberPreference(InnerTubeCookieKey, "")
     var poToken by rememberPreference(PoTokenKey, "")
+    var poTokenGvs by rememberPreference(PoTokenGvsKey, "")
+    var poTokenPlayer by rememberPreference(PoTokenPlayerKey, "")
+    var webClientPoTokenEnabled by rememberPreference(WebClientPoTokenEnabledKey, false)
     var accountName by rememberPreference(AccountNameKey, "")
     var accountEmail by rememberPreference(AccountEmailKey, "")
     var accountChannelHandle by rememberPreference(AccountChannelHandleKey, "")
@@ -78,6 +85,9 @@ fun LoginScreen(
 
                         if (url?.startsWith("https://music.youtube.com") == true) {
                             innerTubeCookie = CookieManager.getInstance().getCookie(url)
+                            if (poToken.isNotBlank()) {
+                                webClientPoTokenEnabled = true
+                            }
                             coroutineScope.launch {
                                 YouTube.accountInfo().onSuccess {
                                     accountName = it.name

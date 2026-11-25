@@ -8,6 +8,8 @@
 
 package com.nikhil.yt.ui.screens.playlist
 
+import com.nikhil.yt.ui.component.CollectionAction
+import com.nikhil.yt.ui.component.CollectionActionRow
 import com.nikhil.yt.ui.component.VeluneLoader
 import android.annotation.SuppressLint
 import androidx.activity.compose.BackHandler
@@ -34,18 +36,14 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
@@ -65,7 +63,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -76,7 +73,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
@@ -93,7 +89,6 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
@@ -104,11 +99,9 @@ import androidx.compose.ui.util.fastAny
 import androidx.compose.ui.util.fastForEachIndexed
 import androidx.compose.ui.util.fastSumBy
 import androidx.compose.ui.zIndex
-import androidx.core.net.toUri
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.exoplayer.offline.Download
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.navigation.NavController
 import androidx.palette.graphics.Palette
@@ -124,7 +117,6 @@ import com.nikhil.yt.LocalDatabase
 import com.nikhil.yt.LocalDownloadUtil
 import com.nikhil.yt.LocalPlayerAwareWindowInsets
 import com.nikhil.yt.LocalPlayerConnection
-import com.nikhil.yt.LocalSyncUtils
 import com.nikhil.yt.R
 import com.nikhil.yt.constants.AppBarHeight
 import com.nikhil.yt.constants.DisableBlurKey
@@ -149,16 +141,11 @@ import com.nikhil.yt.ui.component.DefaultDialog
 import com.nikhil.yt.ui.component.EditPlaylistDialog
 import com.nikhil.yt.ui.component.DraggableScrollbar
 import com.nikhil.yt.ui.component.EmptyPlaceholder
-import com.nikhil.yt.ui.component.PlaylistTagChips
 import com.nikhil.yt.ui.component.AssignTagsDialog
 import com.nikhil.yt.ui.component.IconButton
 import com.nikhil.yt.ui.component.LocalMenuState
 import com.nikhil.yt.ui.component.SongListItem
 import com.nikhil.yt.ui.component.SortHeader
-import com.nikhil.yt.ui.component.shimmer.ButtonPlaceholder
-import com.nikhil.yt.ui.component.shimmer.ListItemPlaceHolder
-import com.nikhil.yt.ui.component.shimmer.ShimmerHost
-import com.nikhil.yt.ui.component.shimmer.TextPlaceholder
 import com.nikhil.yt.ui.menu.SelectionSongMenu
 import com.nikhil.yt.ui.menu.SongMenu
 import com.nikhil.yt.ui.screens.playlist.PlaylistSuggestionsSection
@@ -170,7 +157,6 @@ import com.nikhil.yt.utils.makeTimeString
 import com.nikhil.yt.utils.rememberEnumPreference
 import com.nikhil.yt.utils.rememberPreference
 import com.nikhil.yt.viewmodels.LocalPlaylistViewModel
-import com.valentinilk.shimmer.shimmer
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 import java.time.LocalDateTime
@@ -791,111 +777,26 @@ fun LocalPlaylistScreen(
 
                                 Spacer(modifier = Modifier.height(24.dp))
 
-                                // Action Buttons Row
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 24.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
-                                    verticalAlignment = Alignment.CenterVertically
+                                CollectionActionRow(
+                                    onPlay = {
+                                        playerConnection.playQueue(ListQueue(title = playlist.playlist.name, items = songs.map { it.song.toMediaItem() }))
+                                    },
+                                    onShuffle = {
+                                        playerConnection.playQueue(ListQueue(title = playlist.playlist.name, items = songs.map { it.song.toMediaItem() }, shuffle = true))
+                                    },
                                 ) {
-                                    // Like/Delete Button (depending on editable)
                                     if (editable) {
-                                        Surface(
-                                            onClick = { showDeletePlaylistDialog = true },
-                                            shape = CircleShape,
-                                            color = MaterialTheme.colorScheme.surfaceVariant,
-                                            modifier = Modifier.size(48.dp)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier.fillMaxSize(),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    painter = painterResource(R.drawable.delete),
-                                                    contentDescription = null,
-                                                    tint = MaterialTheme.colorScheme.error,
-                                                    modifier = Modifier.size(24.dp)
-                                                )
-                                            }
-                                        }
+                                        CollectionAction(R.drawable.delete, null, { showDeletePlaylistDialog = true }, tint = MaterialTheme.colorScheme.error)
                                     } else {
                                         val liked = playlist.playlist.bookmarkedAt != null
-                                        Surface(
-                                            onClick = {
-                                                database.transaction {
-                                                    update(playlist.playlist.toggleLike())
-                                                }
-                                            },
-                                            shape = CircleShape,
-                                            color = MaterialTheme.colorScheme.surfaceVariant,
-                                            modifier = Modifier.size(48.dp)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier.fillMaxSize(),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    painter = painterResource(
-                                                        if (liked) R.drawable.favorite else R.drawable.favorite_border
-                                                    ),
-                                                    contentDescription = null,
-                                                    tint = if (liked)
-                                                        MaterialTheme.colorScheme.error
-                                                    else
-                                                        MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    modifier = Modifier.size(24.dp)
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    // Play Button
-                                    Button(
-                                        onClick = {
-                                            playerConnection.playQueue(
-                                                ListQueue(
-                                                    title = playlist.playlist.name,
-                                                    items = songs.map { it.song.toMediaItem() },
-                                                ),
-                                            )
-                                        },
-                                        shape = RoundedCornerShape(24.dp),
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .height(48.dp)
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(R.drawable.play),
-                                            contentDescription = stringResource(R.string.play),
-                                            modifier = Modifier.size(24.dp)
+                                        CollectionAction(
+                                            icon = if (liked) R.drawable.favorite else R.drawable.favorite_border,
+                                            contentDescription = null,
+                                            tint = if (liked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            onClick = { database.transaction { update(playlist.playlist.toggleLike()) } },
                                         )
                                     }
-
-                                    // Shuffle Button
-                                    Button(
-                                        onClick = {
-                                            playerConnection.playQueue(
-                                                ListQueue(
-                                                    title = playlist.playlist.name,
-                                                    items = songs.shuffled().map { it.song.toMediaItem() },
-                                                ),
-                                            )
-                                        },
-                                        shape = RoundedCornerShape(24.dp),
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .height(48.dp)
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(R.drawable.shuffle),
-                                            contentDescription = stringResource(R.string.shuffle),
-                                            modifier = Modifier.size(24.dp)
-                                        )
-                                    }
-
-                                    // Download Button
-                                    Surface(
+                                    IconButton(
                                         onClick = {
                                             when (downloadState) {
                                                 Download.STATE_COMPLETED -> {
@@ -913,56 +814,23 @@ fun LocalPlaylistScreen(
                                                 }
                                                 else -> {
                                                     songs.forEach { song ->
-                                                        val downloadRequest = DownloadRequest
-                                                            .Builder(song.song.id, song.song.id.toUri())
-                                                            .setCustomCacheKey(song.song.id)
-                                                            .setData(song.song.song.title.toByteArray())
-                                                            .build()
-                                                        DownloadService.sendAddDownload(
-                                                            context,
-                                                            ExoDownloadService::class.java,
-                                                            downloadRequest,
-                                                            false,
-                                                        )
+                                                        ExoDownloadService.download(context, song.song.id, song.song.song.title)
                                                     }
                                                 }
                                             }
                                         },
-                                        shape = CircleShape,
-                                        color = MaterialTheme.colorScheme.surfaceVariant,
-                                        modifier = Modifier.size(48.dp)
+                                        modifier = Modifier.size(48.dp),
                                     ) {
-                                        Box(
-                                            modifier = Modifier.fillMaxSize(),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            when (downloadState) {
-                                                Download.STATE_COMPLETED -> {
-                                                    Icon(
-                                                        painter = painterResource(R.drawable.offline),
-                                                        contentDescription = null,
-                                                        tint = MaterialTheme.colorScheme.primary,
-                                                        modifier = Modifier.size(24.dp)
-                                                    )
-                                                }
-                                                Download.STATE_DOWNLOADING -> {
-                                                    VeluneLoader(size = 24.dp)
-                                                }
-                                                else -> {
-                                                    Icon(
-                                                        painter = painterResource(R.drawable.download),
-                                                        contentDescription = null,
-                                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                        modifier = Modifier.size(24.dp)
-                                                    )
-                                                }
-                                            }
+                                        when (downloadState) {
+                                            Download.STATE_COMPLETED -> Icon(painterResource(R.drawable.offline), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+                                            Download.STATE_DOWNLOADING -> VeluneLoader(size = 24.dp)
+                                            else -> Icon(painterResource(R.drawable.download), null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
                                         }
                                     }
-
-                                    // More Options Button
-                                    Surface(
-                                        onClick = {
+                                    CollectionAction(R.drawable.mix, "Start Mix", {
+                                        playerConnection.playQueue(LocalMixQueue(database = database, playlistId = playlist.id, maxMixSize = 50))
+                                    })
+                                    CollectionAction(if (editable) R.drawable.edit else R.drawable.sync, null, {
                                             // Show more options (edit, sync, queue)
                                             if (editable) {
                                                 showEditDialog = true
@@ -991,56 +859,7 @@ fun LocalPlaylistScreen(
                                                     snackbarHostState.showSnackbar(context.getString(R.string.playlist_synced))
                                                 }
                                             }
-                                        },
-                                        shape = CircleShape,
-                                        color = MaterialTheme.colorScheme.surfaceVariant,
-                                        modifier = Modifier.size(48.dp)
-                                    ) {
-                                        Box(
-                                            modifier = Modifier.fillMaxSize(),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                painter = painterResource(
-                                                    if (editable) R.drawable.edit else R.drawable.sync
-                                                ),
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                modifier = Modifier.size(24.dp)
-                                            )
-                                        }
-                                    }
-                                }
-
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 20.dp, vertical = 20.dp),
-                                    horizontalArrangement = Arrangement.Center,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    // Start Mix Button
-                                    Button(
-                                        onClick = {
-                                            playerConnection.playQueue(
-                                                LocalMixQueue(
-                                                    database = database,
-                                                    playlistId = playlist.id,
-                                                    maxMixSize = 50,
-                                                ),
-                                            )
-                                        },
-                                        shape = RoundedCornerShape(24.dp),
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .height(48.dp)
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(R.drawable.mix),
-                                            contentDescription = "Start Mix",
-                                            modifier = Modifier.size(24.dp)
-                                        )
-                                    }
+                                    })
                                 }
 
                                 Spacer(modifier = Modifier.height(24.dp))

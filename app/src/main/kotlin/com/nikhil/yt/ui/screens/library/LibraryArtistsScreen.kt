@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -24,10 +23,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -67,6 +63,7 @@ import com.nikhil.yt.constants.GridThumbnailHeight
 import com.nikhil.yt.constants.LibraryViewType
 import com.nikhil.yt.constants.YtmSyncKey
 import com.nikhil.yt.ui.component.ChipsRow
+import com.nikhil.yt.ui.component.LibraryCategoryChip
 import com.nikhil.yt.ui.component.EmptyPlaceholder
 import com.nikhil.yt.ui.component.LibraryArtistGridItem
 import com.nikhil.yt.ui.component.LibraryArtistListItem
@@ -101,18 +98,8 @@ fun LibraryArtistsScreen(
 
     val filterContent = @Composable {
         Row {
-            Spacer(Modifier.width(12.dp))
-            FilterChip(
-                label = { Text(stringResource(R.string.artists)) },
-                selected = true,
-                colors = FilterChipDefaults.filterChipColors(containerColor = MaterialTheme.colorScheme.surface),
-                onClick = onDeselect,
-                shape = RoundedCornerShape(16.dp),
-                leadingIcon = {
-                    Icon(painter = painterResource(R.drawable.close), contentDescription = "")
-                },
-            )
             ChipsRow(
+                leading = { LibraryCategoryChip(stringResource(R.string.artists), onDeselect) },
                 chips =
                 listOf(
                     ArtistFilter.LIKED to stringResource(R.string.filter_liked),
@@ -204,7 +191,7 @@ fun LibraryArtistsScreen(
                             LibraryViewType.GRID -> R.drawable.grid_view
                         },
                     ),
-                    contentDescription = null,
+                    contentDescription = stringResource(if (viewType == LibraryViewType.LIST) R.string.switch_to_grid else R.string.switch_to_list),
                 )
             }
         }

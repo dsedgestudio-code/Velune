@@ -44,6 +44,10 @@ object PreferenceStore {
         synchronized(this) {
             if (started) return
             started = true
+            // Load once before anything reads settings: reads used to fall back to defaults until the async load finished.
+            _prefs.value = runBlocking(Dispatchers.IO) {
+                withTimeoutOrNull(3000) { context.dataStore.data.first() }
+            }
             scope.launch {
                 context.dataStore.data.collect { preferences ->
                     _prefs.value = preferences
@@ -51,6 +55,8 @@ object PreferenceStore {
             }
         }
     }
+
+    val isLoaded: Boolean get() = _prefs.value != null
 
     fun <T> get(key: Preferences.Key<T>): T? = _prefs.value?.get(key)
 
@@ -66,32 +72,18 @@ object PreferenceStore {
     }
 }
 
+// Once the cache is loaded it is authoritative (null = never set). Before that, read the file, except on the main thread.
 operator fun <T> DataStore<Preferences>.get(key: Preferences.Key<T>): T? =
-    PreferenceStore.get(key)
-        ?: if (Looper.getMainLooper().thread == Thread.currentThread()) {
-            null
-        } else {
-            runBlocking(Dispatchers.IO) {
-                withTimeoutOrNull(1500) {
-                    data.first()[key]
-                }
-            }
-        }
+    when {
+        PreferenceStore.isLoaded -> PreferenceStore.get(key)
+        Looper.getMainLooper().thread == Thread.currentThread() -> null
+        else -> runBlocking(Dispatchers.IO) { withTimeoutOrNull(1500) { data.first()[key] } }
+    }
 
 fun <T> DataStore<Preferences>.get(
     key: Preferences.Key<T>,
     defaultValue: T,
-): T =
-    PreferenceStore.get(key)
-        ?: if (Looper.getMainLooper().thread == Thread.currentThread()) {
-            defaultValue
-        } else {
-            runBlocking(Dispatchers.IO) {
-                withTimeoutOrNull(1500) {
-                    data.first()[key]
-                } ?: defaultValue
-            }
-        }
+): T = get(key) ?: defaultValue
 
 suspend fun <T> DataStore<Preferences>.getAsync(key: Preferences.Key<T>): T? =
     data.first()[key]

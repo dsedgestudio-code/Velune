@@ -52,8 +52,8 @@ fun AssignTagsDialog(
     playlistId: String,
     onDismiss: () -> Unit
 ) {
-    val allTags by database.allTags().collectAsState(initial = emptyList())
-    val currentTags by database.playlistTags(playlistId).collectAsState(initial = emptyList())
+    val allTags by remember { database.allTags() }.collectAsState(initial = emptyList())
+    val currentTags by remember(playlistId) { database.playlistTags(playlistId) }.collectAsState(initial = emptyList())
     
     val currentTagIds = remember(currentTags) { currentTags.map { it.id }.toSet() }
     var selectedTagIds by remember(currentTagIds) { mutableStateOf(currentTagIds) }
@@ -191,8 +191,8 @@ private fun AssignTagsToPlaylistsDialog(
     initialSelectedPlaylistIds: Set<String>,
     onDismiss: () -> Unit,
 ) {
-    val allTags by database.allTags().collectAsState(initial = emptyList())
-    val playlists by database.editablePlaylistsByCreateDateAsc().collectAsState(initial = emptyList())
+    val allTags by remember { database.allTags() }.collectAsState(initial = emptyList())
+    val playlists by remember { database.editablePlaylistsByCreateDateAsc() }.collectAsState(initial = emptyList())
 
     var selectedTagIds by remember(initialSelectedTagIds) { mutableStateOf(initialSelectedTagIds) }
     var selectedPlaylistIds by remember(initialSelectedPlaylistIds) { mutableStateOf(initialSelectedPlaylistIds) }

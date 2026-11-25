@@ -14,7 +14,6 @@ import android.Manifest
 import android.app.ActivityManager
 import android.app.ForegroundServiceStartNotAllowedException
 import android.content.ComponentName
-import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
@@ -40,7 +39,6 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -83,7 +81,6 @@ import androidx.compose.material3.contentColorFor
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -95,7 +92,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
@@ -108,7 +104,6 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -122,7 +117,6 @@ import androidx.core.net.toUri
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.datastore.preferences.core.edit
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.MediaItem
@@ -155,15 +149,12 @@ import com.nikhil.yt.constants.DarkModeKey
 import com.nikhil.yt.constants.DefaultOpenTabKey
 import com.nikhil.yt.constants.DisableScreenshotKey
 import com.nikhil.yt.constants.DynamicThemeKey
-import com.nikhil.yt.constants.HasPressedStarKey
-import com.nikhil.yt.constants.LaunchCountKey
 import com.nikhil.yt.constants.MiniPlayerBottomSpacing
 import com.nikhil.yt.constants.MiniPlayerHeight
 import com.nikhil.yt.constants.NavigationBarAnimationSpec
 import com.nikhil.yt.constants.NavigationBarHeight
 import com.nikhil.yt.constants.PauseSearchHistoryKey
 import com.nikhil.yt.constants.PureBlackKey
-import com.nikhil.yt.constants.RemindAfterKey
 import com.nikhil.yt.constants.SYSTEM_DEFAULT
 import com.nikhil.yt.constants.SearchSource
 import com.nikhil.yt.constants.SearchSourceKey
@@ -194,7 +185,6 @@ import com.nikhil.yt.ui.component.IconButton
 
 import com.nikhil.yt.ui.component.LocalBottomSheetPageState
 import com.nikhil.yt.ui.component.LocalMenuState
-import com.nikhil.yt.ui.component.StarDialog
 import com.nikhil.yt.ui.component.TopSearch
 import com.nikhil.yt.ui.component.rememberBottomSheetState
 import com.nikhil.yt.ui.component.shimmer.ShimmerTheme
@@ -242,7 +232,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var navController: NavHostController
     private var pendingIntent: Intent? = null
     private var pendingDeepLinkSong: PendingDeepLinkSong? = null
-    private var pendingTogetherJoinLink: String? = null
+    /** A Listen Together code from a link or QR, waiting for the user to confirm. */
+    private var togetherLinkCode by mutableStateOf<String?>(null)
 
     private var playerConnection by mutableStateOf<PlayerConnection?>(null)
     private var isMusicServiceBound = false
@@ -258,7 +249,6 @@ class MainActivity : ComponentActivity() {
                     playerConnection =
                         PlayerConnection(this@MainActivity, service, database, lifecycleScope)
                     playPendingDeepLinkSongIfReady()
-                    joinPendingTogetherIfReady()
                 }
             }
 
@@ -278,23 +268,6 @@ class MainActivity : ComponentActivity() {
         val connection = playerConnection ?: return
         pendingDeepLinkSong = null
         connection.playQueue(ListQueue(items = listOf(pending.mediaItem)))
-    }
-
-    private fun joinPendingTogetherIfReady() {
-        val pending = pendingTogetherJoinLink ?: return
-        val connection = playerConnection ?: return
-        pendingTogetherJoinLink = null
-        lifecycleScope.launch(Dispatchers.IO) {
-            val displayName =
-                runCatching { dataStore.data.first()[com.nikhil.yt.constants.TogetherDisplayNameKey] }
-                    .getOrNull()
-                    ?.trim()
-                    .orEmpty()
-                    .ifBlank { Build.MODEL ?: getString(R.string.app_name) }
-            withContext(Dispatchers.Main) {
-                connection.service.joinTogether(pending, displayName)
-            }
-        }
     }
 
     override fun onStart() {
@@ -936,75 +909,6 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    var showStarDialog by remember { mutableStateOf(false) }
-
-                    LaunchedEffect(Unit) {
-                        delay(3000)
-
-                        withContext(Dispatchers.IO) {
-                            val current = dataStore[LaunchCountKey] ?: 0
-                            val newCount = current + 1
-                            dataStore.edit { prefs ->
-                                prefs[LaunchCountKey] = newCount
-                            }
-                        }
-
-                        val shouldShow = withContext(Dispatchers.IO) {
-                            val hasPressed = dataStore[HasPressedStarKey] ?: false
-                            val remindAfter = dataStore[RemindAfterKey] ?: 3
-                            !hasPressed && (dataStore[LaunchCountKey] ?: 0) >= remindAfter
-                        }
-
-                        if (shouldShow) {
-                            var waited = 0L
-                            val waitStep = 500L
-                            val maxWait = 30_000L
-                            while (bottomSheetPageState.isVisible && waited < maxWait) {
-                                delay(waitStep)
-                                waited += waitStep
-                            }
-                            showStarDialog = true
-                        }
-                    }
-
-                    if (showStarDialog) {
-                        StarDialog(
-                            onDismissRequest = { showStarDialog = false },
-                            onStar = {
-                                coroutineScope.launch {
-                                    try {
-                                        withContext(Dispatchers.IO) {
-                                            dataStore.edit { prefs ->
-                                                prefs[HasPressedStarKey] = true
-                                                prefs[RemindAfterKey] = Int.MAX_VALUE
-                                            }
-                                        }
-                                    } catch (e: Exception) {
-                                        reportException(e)
-                                    } finally {
-                                        showStarDialog = false
-                                    }
-                                }
-                            },
-                            onLater = {
-                                coroutineScope.launch {
-                                    try {
-                                        val launch = withContext(Dispatchers.IO) { dataStore[LaunchCountKey] ?: 0 }
-                                        withContext(Dispatchers.IO) {
-                                            dataStore.edit { prefs ->
-                                                prefs[RemindAfterKey] = launch + 10
-                                            }
-                                        }
-                                    } catch (e: Exception) {
-                                        reportException(e)
-                                    } finally {
-                                        showStarDialog = false
-                                    }
-                                }
-                            }
-                        )
-                    }
-
                     remember(navBackStackEntry) {
                         when (navBackStackEntry?.destination?.route) {
                             Screens.Home.route -> R.string.home
@@ -1137,18 +1041,19 @@ class MainActivity : ComponentActivity() {
                                                 } else WindowInsetsSides.Horizontal) + WindowInsetsSides.Top),
                                                 title = {
                                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                                        // app icon
-                                                        Image(
-                                                            painter = painterResource(id = R.drawable.ic_velune_concept),
-                                                            contentDescription = "Velune Logo",
+                                                        // Tinted, not an Image: the white mark must follow the theme.
+                                                        Icon(
+                                                            painter = painterResource(id = R.drawable.ic_spectra_ghost),
+                                                            contentDescription = null,
+                                                            tint = MaterialTheme.colorScheme.onSurface,
                                                             modifier = Modifier
-                                                                .size(35.dp)
-                                                                .padding(end = 6.dp)
+                                                                .padding(end = 10.dp)
+                                                                .size(30.dp)
                                                         )
 
                                                         Text(
                                                             text = stringResource(R.string.app_name),
-                                                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                                                            style = MaterialTheme.typography.headlineSmall,
                                                             maxLines = 1,
                                                             overflow = TextOverflow.Ellipsis
                                                         )
@@ -1389,9 +1294,6 @@ class MainActivity : ComponentActivity() {
                                                         }
                                                     },
                                         ) {
-                                            if (pureBlack) Color.Black
-                                            else MaterialTheme.colorScheme.surfaceContainer
-
                                             FluidSlidingNavigationBar(
                                                 modifier = Modifier
                                                     .align(Alignment.BottomCenter)
@@ -1400,17 +1302,9 @@ class MainActivity : ComponentActivity() {
                                                         end = 12.dp,
                                                         bottom = bottomInset + floatingBarsBottomPadding,
                                                     )
-                                                    .border(
-                                                        width = 1.dp,
-                                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.15f),
-                                                        shape = RoundedCornerShape(24.dp)
-                                                    )
-                                                    .clip(RoundedCornerShape(24.dp))
-                                                    .fillMaxWidth()
                                                     .height(navVisibleHeight),
                                                 items = navigationItems,
                                                 currentRoute = navBackStackEntry?.destination?.route ?: "",
-                                                pureBlack = pureBlack,
                                                 onTabSelected = { screen ->
                                                     val isSelected = navBackStackEntry?.destination?.hierarchy?.any { it.route == screen.route } == true
 
@@ -1556,6 +1450,16 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.align(Alignment.BottomCenter)
                         )
 
+                        playerConnection?.let { connection ->
+                            val togetherName by rememberPreference(com.nikhil.yt.constants.TogetherDisplayNameKey, "")
+                            com.nikhil.yt.ui.component.TogetherPrompts(
+                                controller = connection.service.together,
+                                linkCode = togetherLinkCode,
+                                displayName = togetherName.ifBlank { Build.MODEL ?: getString(R.string.app_name) },
+                                onLinkHandled = { togetherLinkCode = null },
+                            )
+                        }
+
                         sharedSong?.let { song ->
                             playerConnection?.let {
                                 Dialog(
@@ -1604,10 +1508,9 @@ class MainActivity : ComponentActivity() {
         val coroutineScope = lifecycleScope
 
         val authority = uri.authority?.lowercase()
-        if (uri.scheme.equals("velune", ignoreCase = true) && authority == "together") {
-            pendingTogetherJoinLink = uri.toString()
+        if (com.nikhil.yt.together.TogetherCode.isJoinLink(uri.scheme, authority)) {
+            togetherLinkCode = com.nikhil.yt.together.TogetherCode.parse(uri.toString())
             startMusicServiceSafely()
-            joinPendingTogetherIfReady()
             return
         }
 

@@ -45,6 +45,7 @@ enum class SliderStyle {
     Thick,
     Circular,
     Simple,
+    Waveform,
 }
 
 const val SYSTEM_DEFAULT = "SYSTEM_DEFAULT"
@@ -66,12 +67,9 @@ val SelectedYtmPlaylistsKey = stringPreferencesKey("ytm_selected_playlists")
 
 val TogetherDisplayNameKey = stringPreferencesKey("together_display_name")
 val TogetherClientIdKey = stringPreferencesKey("together_client_id")
-val TogetherDefaultPortKey = intPreferencesKey("together_default_port")
 val TogetherAllowGuestsToAddTracksKey = booleanPreferencesKey("together_allow_guests_add_tracks")
 val TogetherAllowGuestsToControlPlaybackKey = booleanPreferencesKey("together_allow_guests_control_playback")
 val TogetherRequireHostApprovalToJoinKey = booleanPreferencesKey("together_require_host_approval_to_join")
-val TogetherLastJoinLinkKey = stringPreferencesKey("together_last_join_link")
-val TogetherWelcomeShownKey = booleanPreferencesKey("together_welcome_shown")
     
 // ListenBrainz scrobbling
 val ListenBrainzEnabledKey = booleanPreferencesKey("listenbrainz_enabled")
@@ -112,10 +110,14 @@ val PersistentQueueKey = booleanPreferencesKey("persistentQueue")
 val PermanentShuffleKey = booleanPreferencesKey("permanentShuffle")
 val SkipSilenceKey = booleanPreferencesKey("skipSilence")
 val AudioNormalizationKey = booleanPreferencesKey("audioNormalization")
+val ImmersiveAudioKey = booleanPreferencesKey("immersiveAudio")
 val AudioOffload = booleanPreferencesKey("audioOffload")
 val AudioCrossfadeDurationKey = intPreferencesKey("audioCrossfadeDuration")
 val AutoLoadMoreKey = booleanPreferencesKey("autoLoadMore")
 val AutoDownloadOnLikeKey = booleanPreferencesKey("autoDownloadOnLike")
+val DownloadWifiOnlyKey = booleanPreferencesKey("downloadWifiOnly")
+val SmartDownloadsKey = booleanPreferencesKey("smartDownloads")
+val SmartDownloadsLimitKey = intPreferencesKey("smartDownloadsLimit")
 val AutoSkipNextOnErrorKey = booleanPreferencesKey("autoSkipNextOnError")
 val PauseOnDeviceMuteKey = booleanPreferencesKey("pauseOnDeviceMute")
 val AutoStartOnBluetoothKey = booleanPreferencesKey("autoStartOnBluetooth")
@@ -262,6 +264,7 @@ enum class SongSortType {
     NAME,
     ARTIST,
     PLAY_TIME,
+    CUSTOM,
 }
 
 enum class PlaylistSongSortType {
@@ -277,6 +280,7 @@ enum class AutoPlaylistSongSortType {
     NAME,
     ARTIST,
     PLAY_TIME,
+    CUSTOM,
 }
 
 enum class ArtistSortType {
@@ -430,6 +434,7 @@ val LyricsClickKey = booleanPreferencesKey("lyricsClick")
 val LyricsScrollKey = booleanPreferencesKey("lyricsScrollKey")
 val LyricsRomanizeJapaneseKey = booleanPreferencesKey("lyricsRomanizeJapanese")
 val LyricsRomanizeKoreanKey = booleanPreferencesKey("lyricsRomanizeKorean")
+val LyricsRomanizeHindiKey = booleanPreferencesKey("lyricsRomanizeHindi")
 val TranslateLyricsKey = booleanPreferencesKey("translateLyrics")
 val UseLyricsV2Key = booleanPreferencesKey("useLyricsV2")
 
@@ -554,9 +559,6 @@ val CountryCodeToName =
     )
 
 // App rating / star prompt preferences
-val LaunchCountKey = intPreferencesKey("launch_count")
-val HasPressedStarKey = booleanPreferencesKey("has_pressed_star")
-val RemindAfterKey = intPreferencesKey("remind_after")
 
 // Update settings
 val EnableUpdateNotificationKey = booleanPreferencesKey("enableUpdateNotification")
@@ -573,8 +575,6 @@ val GitHubReleasesJsonKey = stringPreferencesKey("github_releases_json")
 val GitHubReleasesLastCheckedAtKey = longPreferencesKey("github_releases_last_checked_at")
 val GitHubReleasesFingerprintKey = stringPreferencesKey("github_releases_fingerprint")
 
-val TogetherOnlineEndpointCacheKey = stringPreferencesKey("together_online_endpoint_cache")
-val TogetherOnlineEndpointLastCheckedAtKey = longPreferencesKey("together_online_endpoint_last_checked_at")
 
 enum class UpdateChannel {
     STABLE,

@@ -9,6 +9,7 @@
 package com.nikhil.yt.ui.menu
 
 import android.content.Intent
+import androidx.compose.runtime.remember
 import android.content.res.Configuration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
@@ -66,7 +67,7 @@ fun YouTubeArtistMenu(
     val context = LocalContext.current
     val database = LocalDatabase.current
     val playerConnection = LocalPlayerConnection.current ?: return
-    val libraryArtist by database.artist(artist.id).collectAsState(initial = null)
+    val libraryArtist by remember(artist.id) { database.artist(artist.id) }.collectAsState(initial = null)
 
     YouTubeListItem(
         item = artist,

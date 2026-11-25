@@ -9,6 +9,7 @@
 package com.nikhil.yt.ui.menu
 
 import com.nikhil.yt.ui.component.VeluneLoader
+import com.nikhil.yt.ui.utils.rememberDownloadFlow
 import android.content.Intent
 import android.content.res.Configuration
 import android.media.audiofx.AudioEffect
@@ -88,11 +89,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.core.net.toUri
 import android.widget.Toast
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.exoplayer.offline.Download
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import androidx.navigation.NavController
 import coil3.compose.AsyncImage
@@ -153,10 +152,10 @@ fun PlayerMenu(
     val playerVolume = playerConnection.service.playerVolume.collectAsState()
     val activityResultLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
-    val librarySong by database.song(mediaMetadata.id).collectAsState(initial = null)
+    val librarySong by remember(mediaMetadata.id) { database.song(mediaMetadata.id) }.collectAsState(initial = null)
     val coroutineScope = rememberCoroutineScope()
 
-    val download by LocalDownloadUtil.current.getDownload(mediaMetadata.id)
+    val download by rememberDownloadFlow(mediaMetadata.id)
         .collectAsState(initial = null)
 
     val artists =
@@ -617,18 +616,7 @@ fun PlayerMenu(
                             database.transaction {
                                 insert(mediaMetadata)
                             }
-                            val downloadRequest =
-                                DownloadRequest
-                                    .Builder(mediaMetadata.id, mediaMetadata.id.toUri())
-                                    .setCustomCacheKey(mediaMetadata.id)
-                                    .setData(mediaMetadata.title.toByteArray())
-                                    .build()
-                            DownloadService.sendAddDownload(
-                                context,
-                                ExoDownloadService::class.java,
-                                downloadRequest,
-                                false,
-                            )
+                            ExoDownloadService.download(context, mediaMetadata.id, mediaMetadata.title)
                         }
                         , colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                         )
@@ -1181,7 +1169,7 @@ fun EqualizerDialog(
 ) {
     val context = LocalContext.current
     val playerConnection = LocalPlayerConnection.current ?: return
-    val eqCapabilities by playerConnection.service.eqCapabilities.collectAsState()
+    val eqCapabilities by playerConnection.service.audioEffects.capabilities.collectAsState()
 
     val (eqEnabled, setEqEnabled) = rememberPreference(EqualizerEnabledKey, defaultValue = false)
     val (selectedProfileId, setSelectedProfileId) = rememberPreference(EqualizerSelectedProfileIdKey, defaultValue = "flat")
@@ -1491,7 +1479,7 @@ fun EqualizerDialog(
                             FilterChip(
                                 selected = selectedProfileId == "flat",
                                 onClick = {
-                                    playerConnection.service.applyEqFlatPreset()
+                                    playerConnection.service.audioEffects.applyFlatPreset()
                                     setSelectedProfileId("flat")
                                 },
                                 label = { Text(text = stringResource(R.string.eq_flat)) },
@@ -1508,7 +1496,7 @@ fun EqualizerDialog(
                                 FilterChip(
                                     selected = selectedProfileId == "system:$index",
                                     onClick = {
-                                        playerConnection.service.applySystemEqPreset(index)
+                                        playerConnection.service.audioEffects.applySystemPreset(index, playerConnection.service.player.audioSessionId)
                                         setSelectedProfileId("system:$index")
                                     },
                                     label = {

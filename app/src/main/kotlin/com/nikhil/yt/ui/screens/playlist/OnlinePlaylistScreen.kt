@@ -121,6 +121,8 @@ import com.nikhil.yt.innertube.models.SongItem
 import com.nikhil.yt.innertube.models.WatchEndpoint
 import com.nikhil.yt.models.toMediaMetadata
 import com.nikhil.yt.playback.queues.YouTubeQueue
+import com.nikhil.yt.ui.component.CollectionAction
+import com.nikhil.yt.ui.component.CollectionActionRow
 import com.nikhil.yt.ui.component.DraggableScrollbar
 import com.nikhil.yt.ui.component.IconButton
 import com.nikhil.yt.ui.component.LocalMenuState
@@ -645,16 +647,16 @@ fun OnlinePlaylistScreen(
 
                                 Spacer(modifier = Modifier.height(24.dp))
 
-                                // Action Buttons Row
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                                    horizontalArrangement =
-                                        Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
-                                    verticalAlignment = Alignment.CenterVertically
+                                CollectionActionRow(
+                                    onPlay = playlist.playEndpoint?.let { ep -> { playerConnection.playQueue(YouTubeQueue(ep)) } },
+                                    onShuffle = playlist.shuffleEndpoint?.let { ep -> { playerConnection.playQueue(YouTubeQueue(ep)) } },
                                 ) {
-                                    // Like/Save Button
                                     if (playlist.id != "LM") {
-                                        Surface(
+                                        val saved = dbPlaylist?.playlist?.bookmarkedAt != null
+                                        CollectionAction(
+                                            icon = if (saved) R.drawable.favorite else R.drawable.favorite_border,
+                                            contentDescription = null,
+                                            tint = if (saved) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                                             onClick = {
                                                 if (dbPlaylist?.playlist == null) {
                                                     database.transaction {
@@ -698,137 +700,24 @@ fun OnlinePlaylistScreen(
                                                     }
                                                 }
                                             },
-                                            shape = CircleShape,
-                                            color = MaterialTheme.colorScheme.surfaceVariant,
-                                            modifier = Modifier.size(48.dp)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier.fillMaxSize(),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    painter =
-                                                        painterResource(
-                                                            if (
-                                                                dbPlaylist
-                                                                    ?.playlist
-                                                                    ?.bookmarkedAt != null
-                                                            )
-                                                                R.drawable.favorite
-                                                            else R.drawable.favorite_border
-                                                        ),
-                                                    contentDescription = null,
-                                                    tint =
-                                                        if (
-                                                            dbPlaylist?.playlist?.bookmarkedAt !=
-                                                                null
-                                                        )
-                                                            MaterialTheme.colorScheme.error
-                                                        else
-                                                            MaterialTheme.colorScheme
-                                                                .onSurfaceVariant,
-                                                    modifier = Modifier.size(24.dp)
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    // Shuffle Button
-                                    playlist.shuffleEndpoint?.let { shuffleEndpoint ->
-                                        Button(
-                                            onClick = {
-                                                playerConnection.playQueue(
-                                                    YouTubeQueue(shuffleEndpoint)
-                                                )
-                                            },
-                                            shape = RoundedCornerShape(24.dp),
-                                            modifier = Modifier.weight(1f).height(48.dp)
-                                        ) {
-                                            Icon(
-                                                painter = painterResource(R.drawable.shuffle),
-                                                contentDescription =
-                                                    stringResource(R.string.shuffle),
-                                                modifier = Modifier.size(24.dp)
-                                            )
-                                        }
-                                    }
-
-                                    // Radio Button
-                                    playlist.radioEndpoint?.let { radioEndpoint ->
-                                        Button(
-                                            onClick = {
-                                                playerConnection.playQueue(
-                                                    YouTubeQueue(radioEndpoint)
-                                                )
-                                            },
-                                            shape = RoundedCornerShape(24.dp),
-                                            modifier = Modifier.weight(1f).height(48.dp)
-                                        ) {
-                                            Icon(
-                                                painter = painterResource(R.drawable.radio),
-                                                contentDescription = stringResource(R.string.radio),
-                                                modifier = Modifier.size(24.dp)
-                                            )
-                                        }
-                                    }
-
-                                    // More Options Button
-                                    Surface(
-                                        onClick = {
-                                            menuState.show {
-                                                YouTubePlaylistMenu(
-                                                    playlist = playlist,
-                                                    songs = songs,
-                                                    coroutineScope = coroutineScope,
-                                                    onDismiss = menuState::dismiss,
-                                                    selectAction = { selection = true },
-                                                    canSelect = true,
-                                                    snackbarHostState = snackbarHostState,
-                                                )
-                                            }
-                                        },
-                                        shape = CircleShape,
-                                        color = MaterialTheme.colorScheme.surfaceVariant,
-                                        modifier = Modifier.size(48.dp)
-                                    ) {
-                                        Box(
-                                            modifier = Modifier.fillMaxSize(),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                painter = painterResource(R.drawable.more_vert),
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                modifier = Modifier.size(24.dp)
-                                            )
-                                        }
-                                    }
-                                }
-
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 20.dp, vertical = 20.dp),
-                                    horizontalArrangement = Arrangement.Center,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Button(
-                                        onClick = {
-                                            playlist.shuffleEndpoint?.let { shuffleEndpoint ->
-                                                playerConnection.playQueue(
-                                                    YouTubeQueue(shuffleEndpoint)
-                                                )
-                                            }
-                                        },
-                                        shape = RoundedCornerShape(24.dp),
-                                        modifier = Modifier.weight(1f).height(48.dp)
-                                    ) {
-                                        Icon(
-                                            painter = painterResource(R.drawable.mix),
-                                            contentDescription = "Start Mix",
-                                            modifier = Modifier.size(24.dp)
                                         )
                                     }
+                                    playlist.radioEndpoint?.let { ep ->
+                                        CollectionAction(R.drawable.radio, stringResource(R.string.radio), { playerConnection.playQueue(YouTubeQueue(ep)) })
+                                    }
+                                    CollectionAction(R.drawable.more_vert, null, {
+                                        menuState.show {
+                                            YouTubePlaylistMenu(
+                                                playlist = playlist,
+                                                songs = songs,
+                                                coroutineScope = coroutineScope,
+                                                onDismiss = menuState::dismiss,
+                                                selectAction = { selection = true },
+                                                canSelect = true,
+                                                snackbarHostState = snackbarHostState,
+                                            )
+                                        }
+                                    })
                                 }
 
                                 Spacer(modifier = Modifier.height(24.dp))

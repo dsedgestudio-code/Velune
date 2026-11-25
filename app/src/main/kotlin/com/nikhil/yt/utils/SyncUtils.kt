@@ -200,6 +200,12 @@ class SyncUtils @Inject constructor(
                 Timber.w("syncLikedSongs: Remote playlist is empty")
                 return@onSuccess
             }
+            // Every pass rewrites all liked dates, waking every song list; skip it when nothing changed.
+            val remoteIds = remoteSongs.map { it.id }
+            val remoteIdSet = remoteIds.toSet()
+            val localOrder = database.likedSongsByCreateDateAsc().first()
+                .asReversed().map { it.id }.filter { it in remoteIdSet }
+            if (localOrder == remoteIds) return@onSuccess
             val baseTimestamp = LocalDateTime.now()
 
             remoteSongs.forEachIndexed { index, song ->
@@ -246,7 +252,8 @@ class SyncUtils @Inject constructor(
             val localSongs = database.songsByNameAsc().first()
 
             if (!isSyncStillEnabled(gen)) return@onSuccess
-            localSongs.filterNot { it.id in remoteIds }
+            // A partial fetch (network error mid-paging) must never un-save the items it didn't reach.
+            if (page.continuation == null) localSongs.filterNot { it.id in remoteIds }
                 .forEach { database.update(it.song.copy(inLibrary = null)) }
 
             remoteSongs.forEach { song ->
@@ -292,7 +299,8 @@ class SyncUtils @Inject constructor(
             val localAlbums = database.albumsLikedByNameAsc().first()
 
             if (!isSyncStillEnabled(gen)) return@onSuccess
-            localAlbums.filterNot { it.id in remoteIds }
+            // A partial fetch (network error mid-paging) must never un-save the items it didn't reach.
+            if (page.continuation == null) localAlbums.filterNot { it.id in remoteIds }
                 .forEach { database.update(it.album.localToggleLike()) }
 
             remoteAlbums.forEach { album ->
@@ -347,7 +355,8 @@ class SyncUtils @Inject constructor(
             val localArtists = database.artistsBookmarkedByNameAsc().first()
 
             if (!isSyncStillEnabled(gen)) return@onSuccess
-            localArtists.filterNot { it.id in remoteIds }
+            // A partial fetch (network error mid-paging) must never un-save the items it didn't reach.
+            if (page.continuation == null) localArtists.filterNot { it.id in remoteIds }
                 .forEach { database.update(it.artist.localToggleLike()) }
 
             remoteArtists.forEach { artist ->
@@ -419,7 +428,8 @@ class SyncUtils @Inject constructor(
 
             val localPlaylists = database.playlistsByNameAsc().first()
             if (!isSyncStillEnabled(gen)) return@onSuccess
-            localPlaylists.filterNot { it.playlist.browseId in remoteIds }
+            // A partial fetch (network error mid-paging) must never un-save the items it didn't reach.
+            if (page.continuation == null) localPlaylists.filterNot { it.playlist.browseId in remoteIds }
                 .filterNot { it.playlist.browseId == null }
                 .forEach { database.update(it.playlist.localToggleLike()) }
 
@@ -521,6 +531,11 @@ class SyncUtils @Inject constructor(
                 Timber.w("syncPlaylist: Remote playlist is empty, skipping sync")
                 return@onSuccess
             }
+            if (page.songsContinuation != null) {
+                // Partial fetch: replacing the local copy would truncate the playlist.
+                Timber.w("syncPlaylist: Remote fetch incomplete, skipping sync")
+                return@onSuccess
+            }
 
             val remoteIds = songs.mapNotNull { it.id }
             if (remoteIds.isEmpty()) {
@@ -548,8 +563,8 @@ class SyncUtils @Inject constructor(
                 database.withTransaction {
                     if (!isSyncStillEnabled(gen)) return@withTransaction
                     database.clearPlaylist(playlistId)
+                    // No early exit after clearing: returning here would commit a half-filled playlist.
                     songs.forEachIndexed { idx, song ->
-                        if (!isSyncStillEnabled(gen)) return@withTransaction
                         if (song.id == null) return@forEachIndexed
                         if (database.song(song.id).firstOrNull() == null) {
                             database.insert(song)

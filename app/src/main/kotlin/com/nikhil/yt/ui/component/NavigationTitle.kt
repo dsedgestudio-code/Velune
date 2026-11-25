@@ -26,9 +26,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.nikhil.yt.R
 
 @Composable
@@ -49,7 +49,7 @@ fun NavigationTitle(
             .clickable(enabled = onClick != null) {
                 onClick?.invoke()
             }
-            .padding(horizontal = 12.dp, vertical = 12.dp)
+            .padding(start = 20.dp, end = 12.dp, top = 28.dp, bottom = 10.dp)
     ) {
         thumbnail?.invoke()
 
@@ -57,28 +57,21 @@ fun NavigationTitle(
             verticalArrangement = Arrangement.Center,
             modifier = Modifier.weight(1f)
         ) {
-            label?.let { label ->
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelLarge,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-
             Text(
                 text = title,
                 style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary,
+                fontSize = 20.sp,
+                color = MaterialTheme.colorScheme.onSurface,
                 overflow = TextOverflow.Ellipsis,
                 maxLines = 1,
             )
 
-            subtitle?.let {
+            // YouTube's section strapline and our subtitle share one quiet line under the title.
+            listOfNotNull(label, subtitle).joinToString(" · ").takeIf { it.isNotEmpty() }?.let {
                 Text(
                     text = it,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.secondary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     overflow = TextOverflow.Ellipsis,
                     maxLines = 1,
                 )
@@ -89,7 +82,7 @@ fun NavigationTitle(
             Icon(
                 painter = painterResource(R.drawable.arrow_forward),
                 contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }

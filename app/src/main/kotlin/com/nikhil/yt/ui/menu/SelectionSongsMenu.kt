@@ -42,11 +42,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.core.net.toUri
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.exoplayer.offline.Download
-import androidx.media3.exoplayer.offline.DownloadRequest
 import androidx.media3.exoplayer.offline.DownloadService
 import com.nikhil.yt.innertube.YouTube
 import com.nikhil.yt.LocalDatabase
@@ -247,7 +245,8 @@ fun SelectionSongMenu(
                             playerConnection.playQueue(
                                 ListQueue(
                                     title = "Selection",
-                                    items = songSelection.shuffled().map { it.toMediaItem() },
+                                    items = songSelection.map { it.toMediaItem() },
+                                    shuffle = true,
                                 ),
                             )
                             clearAction()
@@ -306,7 +305,8 @@ fun SelectionSongMenu(
                     playerConnection.playQueue(
                         ListQueue(
                             title = "Selection",
-                            items = songSelection.shuffled().map { it.toMediaItem() },
+                            items = songSelection.map { it.toMediaItem() },
+                            shuffle = true,
                         ),
                     )
                     clearAction()
@@ -423,18 +423,7 @@ fun SelectionSongMenu(
                         },
                         modifier = Modifier.clickable {
                             songSelection.forEach { song ->
-                                val downloadRequest =
-                                    DownloadRequest
-                                        .Builder(song.id, song.id.toUri())
-                                        .setCustomCacheKey(song.id)
-                                        .setData(song.song.title.toByteArray())
-                                        .build()
-                                DownloadService.sendAddDownload(
-                                    context,
-                                    ExoDownloadService::class.java,
-                                    downloadRequest,
-                                    false,
-                                )
+                                ExoDownloadService.download(context, song.id, song.song.title)
                             }
                         }
                     )
@@ -682,7 +671,8 @@ fun SelectionMediaMetadataMenu(
                     playerConnection.playQueue(
                         ListQueue(
                             title = "Selection",
-                            items = songSelection.shuffled().map { it.toMediaItem() },
+                            items = songSelection.map { it.toMediaItem() },
+                            shuffle = true,
                         ),
                     )
                     clearAction()
@@ -792,18 +782,7 @@ fun SelectionMediaMetadataMenu(
                         },
                         modifier = Modifier.clickable {
                             songSelection.forEach { song ->
-                                val downloadRequest =
-                                    DownloadRequest
-                                        .Builder(song.id, song.id.toUri())
-                                        .setCustomCacheKey(song.id)
-                                        .setData(song.title.toByteArray())
-                                        .build()
-                                DownloadService.sendAddDownload(
-                                    context,
-                                    ExoDownloadService::class.java,
-                                    downloadRequest,
-                                    false,
-                                )
+                                ExoDownloadService.download(context, song.id, song.title)
                             }
                         }
                     )

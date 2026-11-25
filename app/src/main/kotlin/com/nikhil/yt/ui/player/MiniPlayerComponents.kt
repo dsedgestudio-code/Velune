@@ -445,7 +445,7 @@ fun MiniPlayerSubscribeButton(mediaMetadata: MediaMetadata) {
     val database = LocalDatabase.current
     mediaMetadata.artists.firstOrNull()?.let { artistInfo ->
         artistInfo.id?.let { artistId ->
-            val libraryArtist by database.artist(artistId).collectAsState(initial = null)
+            val libraryArtist by remember(artistId) { database.artist(artistId) }.collectAsState(initial = null)
             val isSubscribed = libraryArtist?.artist?.bookmarkedAt != null
 
             Box(

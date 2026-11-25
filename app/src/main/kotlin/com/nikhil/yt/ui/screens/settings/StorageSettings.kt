@@ -242,6 +242,8 @@ fun StorageSettings(
                 )
             }
 
+            item { DownloadCareSection() }
+
             item {
                 val songDesc = if (maxSongCacheSize == -1) {
                     stringResource(R.string.size_used, formatFileSize(playerCacheSize))
@@ -325,11 +327,11 @@ fun StorageSettings(
                 title = stringResource(R.string.clear_all_downloads),
                 onDismiss = { clearDownloads = false },
                 onConfirm = {
-                    coroutineScope.launch(Dispatchers.IO) {
-                        downloadCache.keys.forEach { key ->
-                            downloadCache.removeResource(key)
-                        }
-                    }
+                    // Through the download manager: deleting cache files alone left every song marked
+                    // "downloaded" in the Downloads list with its audio gone.
+                    androidx.media3.exoplayer.offline.DownloadService.sendRemoveAllDownloads(
+                        context, com.nikhil.yt.playback.ExoDownloadService::class.java, false,
+                    )
                     clearDownloads = false
                 },
                 onCancel = { clearDownloads = false },
@@ -583,3 +585,88 @@ fun NewCacheCard(
     }
 }
 
+
+
+/** Quality upgrade, cleanup of unplayed downloads, and smart downloads. */
+@Composable
+private fun DownloadCareSection() {
+    val downloadUtil = com.nikhil.yt.LocalDownloadUtil.current
+    val downloads by downloadUtil.downloads.collectAsState()
+    var lowQuality by remember { mutableStateOf<List<String>>(emptyList()) }
+    var stale by remember { mutableStateOf<List<String>>(emptyList()) }
+    var confirmUpgrade by remember { mutableStateOf(false) }
+    var confirmCleanup by remember { mutableStateOf(false) }
+    val (smartDownloads, onSmartDownloadsChange) =
+        rememberPreference(com.nikhil.yt.constants.SmartDownloadsKey, defaultValue = false)
+    val (smartLimit, onSmartLimitChange) = rememberPreference(
+        com.nikhil.yt.constants.SmartDownloadsLimitKey,
+        defaultValue = com.nikhil.yt.playback.SmartDownloadWorker.DEFAULT_LIMIT,
+    )
+
+    LaunchedEffect(downloads.size) {
+        lowQuality = downloadUtil.lowQualityDownloadIds()
+        stale = downloadUtil.staleDownloadIds()
+    }
+
+    Column {
+        com.nikhil.yt.ui.component.PreferenceEntry(
+            title = { Text(stringResource(R.string.upgrade_downloads)) },
+            description = if (lowQuality.isEmpty()) stringResource(R.string.downloads_best_quality)
+            else stringResource(R.string.upgrade_downloads_desc, lowQuality.size),
+            icon = { Icon(painterResource(R.drawable.graphic_eq), null) },
+            onClick = { confirmUpgrade = true },
+            isEnabled = lowQuality.isNotEmpty(),
+        )
+        com.nikhil.yt.ui.component.PreferenceEntry(
+            title = { Text(stringResource(R.string.cleanup_downloads)) },
+            description = if (stale.isEmpty()) stringResource(R.string.cleanup_downloads_none)
+            else stringResource(R.string.cleanup_downloads_desc, stale.size),
+            icon = { Icon(painterResource(R.drawable.ic_download), null) },
+            onClick = { confirmCleanup = true },
+            isEnabled = stale.isNotEmpty(),
+        )
+        com.nikhil.yt.ui.component.SwitchPreference(
+            title = { Text(stringResource(R.string.smart_downloads)) },
+            description = stringResource(R.string.smart_downloads_desc, smartLimit),
+            icon = { Icon(painterResource(R.drawable.download), null) },
+            checked = smartDownloads,
+            onCheckedChange = onSmartDownloadsChange,
+        )
+        if (smartDownloads) {
+            ListPreference(
+                title = { Text(stringResource(R.string.smart_downloads_limit)) },
+                selectedValue = smartLimit,
+                values = listOf(15, 30, 50, 100),
+                valueText = { "$it" },
+                onValueSelected = onSmartLimitChange,
+            )
+        }
+    }
+
+    if (confirmUpgrade) {
+        ActionPromptDialog(
+            title = stringResource(R.string.upgrade_downloads),
+            onDismiss = { confirmUpgrade = false },
+            onConfirm = {
+                downloadUtil.upgradeDownloads(lowQuality)
+                lowQuality = emptyList()
+                confirmUpgrade = false
+            },
+            onCancel = { confirmUpgrade = false },
+            content = { Text(stringResource(R.string.upgrade_downloads_confirm, lowQuality.size)) },
+        )
+    }
+    if (confirmCleanup) {
+        ActionPromptDialog(
+            title = stringResource(R.string.cleanup_downloads),
+            onDismiss = { confirmCleanup = false },
+            onConfirm = {
+                downloadUtil.removeDownloads(stale)
+                stale = emptyList()
+                confirmCleanup = false
+            },
+            onCancel = { confirmCleanup = false },
+            content = { Text(stringResource(R.string.cleanup_downloads_confirm, stale.size)) },
+        )
+    }
+}

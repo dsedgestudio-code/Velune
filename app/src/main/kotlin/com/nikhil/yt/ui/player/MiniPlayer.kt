@@ -18,7 +18,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
-import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,10 +35,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -71,7 +70,6 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Player.STATE_BUFFERING
 import coil3.compose.AsyncImage
-import com.nikhil.yt.LocalDatabase
 import com.nikhil.yt.LocalPlayerConnection
 import com.nikhil.yt.R
 import com.nikhil.yt.constants.MiniPlayerHeight
@@ -80,14 +78,12 @@ import com.nikhil.yt.constants.ThumbnailCornerRadius
 import com.nikhil.yt.constants.UseNewMiniPlayerDesignKey
 
 import com.nikhil.yt.constants.CropThumbnailToSquareKey
-import com.nikhil.yt.db.entities.ArtistEntity
 import com.nikhil.yt.extensions.togglePlayPause
 import com.nikhil.yt.models.MediaMetadata
 import com.nikhil.yt.utils.rememberPreference
 import kotlinx.coroutines.launch
 import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
-import androidx.compose.foundation.clickable
 import com.nikhil.yt.playback.PlayerConnection
 
 @Composable
@@ -145,15 +141,8 @@ private fun NewMiniPlayer(
                 .fillMaxWidth()
                 .height(64.dp)
                 .offset { IntOffset(offsetX.roundToInt(), 0) }
-                .clip(RoundedCornerShape(32.dp))
-                .background(
-                    color = MaterialTheme.colorScheme.surfaceContainer
-                )
-                .border(
-                    width = 1.dp,
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
-                    shape = RoundedCornerShape(32.dp)
-                )
+                .clip(RoundedCornerShape(18.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
         ) {
             FloatingMiniPlayerContent(
                 pureBlack = pureBlack,
@@ -380,7 +369,7 @@ private fun LegacyMiniMediaInfo(
     pureBlack: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val cropThumbnailToSquare by rememberPreference(CropThumbnailToSquareKey, false)
+    val cropThumbnailToSquare by rememberPreference(CropThumbnailToSquareKey, true)
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier,
@@ -491,140 +480,77 @@ private fun FloatingMiniPlayerContent(
     val isLoading = playbackState == androidx.media3.common.Player.STATE_BUFFERING
     val currentSong by playerConnection.currentSong.collectAsState(initial = null)
     val isLiked = currentSong?.song?.liked == true
-    val database = LocalDatabase.current
-    val firstArtist = mediaMetadata?.artists?.firstOrNull()
-    val libraryArtist by remember(firstArtist?.id) {
-        firstArtist?.id?.let { database.artist(it) } ?: kotlinx.coroutines.flow.flowOf(null)
-    }.collectAsState(initial = null)
-    val isSubscribed = libraryArtist?.artist?.bookmarkedAt != null
 
-    Row(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier.size(52.dp),
-            contentAlignment = Alignment.Center
+    Box(Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 10.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            androidx.compose.material3.CircularProgressIndicator(
-                progress = { (position.toFloat() / duration.coerceAtLeast(1L)).coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxSize(),
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
-                strokeWidth = 2.dp
-            )
-
             coil3.compose.AsyncImage(
                 model = mediaMetadata?.thumbnailUrl,
                 contentDescription = null,
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                 modifier = Modifier
                     .size(44.dp)
-                    .clip(CircleShape)
-                    .clickable { playerConnection.player.togglePlayPause() }
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
             )
-
-            if (!isPlaying || isLoading) {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                        .clickable { playerConnection.player.togglePlayPause() },
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (isLoading) {
-                        com.nikhil.yt.ui.component.VeluneLoader(size = 20.dp)
-                    } else {
-                        Icon(
-                            painter = painterResource(R.drawable.play),
-                            contentDescription = "Play",
-                            tint = Color.White,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 12.dp),
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = mediaMetadata?.title ?: "Unknown Song",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.basicMarquee()
+                )
+                Text(
+                    text = mediaMetadata?.artists?.joinToString { it.name } ?: "Unknown Artist",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+            }
+            IconButton(onClick = { playerConnection.toggleLike() }) {
+                Icon(
+                    painter = painterResource(if (isLiked) R.drawable.favorite else R.drawable.favorite_border),
+                    contentDescription = if (isLiked) "Unlike" else "Like",
+                    tint = if (isLiked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            IconButton(onClick = { playerConnection.player.togglePlayPause() }) {
+                if (isLoading) {
+                    com.nikhil.yt.ui.component.VeluneLoader(size = 22.dp)
+                } else {
+                    Icon(
+                        painter = painterResource(if (isPlaying) R.drawable.pause else R.drawable.play),
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(26.dp)
+                    )
                 }
             }
         }
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(
-                text = mediaMetadata?.title ?: "Unknown Song",
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                modifier = Modifier.basicMarquee()
-            )
-            Text(
-                text = mediaMetadata?.artists?.joinToString { it.name } ?: "Unknown Artist",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                modifier = Modifier.basicMarquee()
-            )
-        }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(end = 4.dp)
-        ) {
-            val buttonModifier = Modifier
-                .size(36.dp)
-                .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f), CircleShape)
-                .clip(CircleShape)
-
-            Box(
-                modifier = buttonModifier.clickable {
-                    firstArtist?.let { artistInfo ->
-                        artistInfo.id?.let { artistId ->
-                            database.transaction {
-                                val artist = libraryArtist?.artist
-                                if (artist != null) {
-                                    update(artist.toggleLike())
-                                } else {
-                                    insert(
-                                        ArtistEntity(
-                                            id = artistId,
-                                            name = artistInfo.name,
-                                            channelId = null,
-                                            thumbnailUrl = null,
-                                        ).toggleLike()
-                                    )
-                                }
-                            }
-                        }
-                    }
-                },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    painter = painterResource(if (isSubscribed) R.drawable.subscribed else R.drawable.person),
-                    contentDescription = "Artist",
-                    tint = if (isSubscribed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-            Box(
-                modifier = buttonModifier.clickable { playerConnection.toggleLike() },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    painter = painterResource(if (isLiked) R.drawable.favorite else R.drawable.favorite_border),
-                    contentDescription = "Like",
-                    tint = if (isLiked) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-        }
+        // Progress as a thin band in the song's colours (the theme follows the artwork).
+        val progress = (position.toFloat() / duration.coerceAtLeast(1L)).coerceIn(0f, 1f)
+        val band = Brush.horizontalGradient(
+            listOf(MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.tertiary)
+        )
+        Box(
+            Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth(progress)
+                .height(2.5.dp)
+                .background(band)
+        )
     }
 }
-
-

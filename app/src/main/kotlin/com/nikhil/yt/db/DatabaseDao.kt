@@ -137,6 +137,7 @@ interface DatabaseDao {
             }
 
         SongSortType.PLAY_TIME -> songsByPlayTimeAsc()
+        SongSortType.CUSTOM -> songsByCreateDateAsc()
     }.map { it.reversed(descending) }
 
     @Transaction
@@ -250,6 +251,7 @@ interface DatabaseDao {
             }
 
         SongSortType.PLAY_TIME -> likedSongsByPlayTimeAsc()
+        SongSortType.CUSTOM -> likedSongsByCreateDateAsc()
     }.map { it.reversed(descending) }
 
     @Transaction
@@ -641,6 +643,22 @@ interface DatabaseDao {
     @Transaction
     @Query("SELECT * FROM song WHERE id IN (:songIds)")
     suspend fun getSongsByIds(songIds: List<String>): List<Song>
+
+    /** Live version for the Downloaded list: only the downloaded songs, not the whole library. */
+    @Transaction
+    @Query("SELECT * FROM song WHERE id IN (:songIds)")
+    fun songsByIds(songIds: List<String>): Flow<List<Song>>
+
+    @Query("SELECT DISTINCT songId FROM event WHERE timestamp > :fromTimeStamp")
+    suspend fun songIdsPlayedSince(fromTimeStamp: Long): List<String>
+
+    @Query("SELECT * FROM format WHERE id IN (:songIds)")
+    suspend fun formatsByIds(songIds: List<String>): List<FormatEntity>
+
+    /** Songs you've shown any interest in: candidates for smart downloads. */
+    @Transaction
+    @Query("SELECT * FROM song WHERE liked OR inLibrary IS NOT NULL OR totalPlayTime > 0")
+    suspend fun songsWithInterest(): List<Song>
 
     
     @Transaction
@@ -1140,9 +1158,10 @@ interface DatabaseDao {
         previewSize: Int = Int.MAX_VALUE,
     ): Flow<List<Playlist>>
 
+    /** Newest plays first. Always bounded: the history table only grows and loading it whole exhausted memory. */
     @Transaction
-    @Query("SELECT * FROM event ORDER BY rowId DESC")
-    fun events(): Flow<List<EventWithSong>>
+    @Query("SELECT * FROM event ORDER BY rowId DESC LIMIT :limit")
+    fun recentEvents(limit: Int): Flow<List<EventWithSong>>
 
     @Transaction
     @Query("SELECT * FROM event ORDER BY rowId ASC LIMIT 1")
